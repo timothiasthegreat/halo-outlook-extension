@@ -1,0 +1,56 @@
+# Halo Outlook Extension — Watcher Configuration
+# Copy this to config.yaml and fill in your values
+
+# HaloPSA connection
+halo:
+  # Your HaloPSA instance URL (e.g. https://service.firesideit.ca)
+  instance_url: https://your-instance.halopsa.com
+
+  # OAuth2 client credentials (for unattended watcher operation)
+  # From Configuration → Integrations → Halo API → OAuth Application
+  client_id: ""
+  client_secret: ""
+
+  # Ticket action IDs — discover these from your Halo instance
+  # 0  = Email Update (inbound: customer → agent)
+  # 16 = Email User (outbound: agent → customer)  
+  # 7  = Recorded Note (internal)
+  actions:
+    email_received: 0
+    email_sent: 16
+    internal_note: 7
+
+  # Custom field ID that stores the conversationId on tickets
+  # CFticketconvid on service.firesideit.ca is ID 285
+  custom_field_conv_id: 285
+
+  # Default ticket type for new tickets created from conversations
+  default_ticket_type_id: 1  # Incident (configure per your Halo instance)
+
+# Microsoft Graph connection (for email monitoring)
+graph:
+  # Azure AD tenant ID
+  tenant_id: ""
+
+  # App registration client ID (requires Mail.Read application permission)
+  client_id: ""
+
+  # Client secret for unattended operation
+  client_secret: ""
+
+  # Mailbox to watch (e.g. tim@firesideit.ca)
+  user_email: ""
+
+# Watcher behavior
+watcher:
+  # How often to poll for new messages (in seconds)
+  poll_interval_seconds: 90
+
+  # Stop watching conversations after N days of silence
+  stale_conversation_days: 14
+
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  log_level: INFO
+
+  # SQLite database path (relative to working directory or absolute)
+  state_db_path: state.db

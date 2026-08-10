@@ -1,3 +1,9 @@
 refs/*.*
 .hermes/*
 /PROJECT_BRIEF.md
+.env
+__pycache__/
+*.egg-info/
+.pytest_cache/
+*.pyc
+state.db
