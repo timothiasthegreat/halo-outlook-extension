@@ -83,7 +83,8 @@ cd add-in
 # Build
 npm install && npm run build
 
-# Host the dist/ folder (GitHub Pages, Azure Static Web Apps, or any web server)
+# Host the dist/ folder (GitHub Pages, Azure, S3, or any web server)
+# Full guide: docs/addin-deployment.md
 # Update manifest.xml <SourceLocation> to your hosted URL
 # Upload manifest.xml to Microsoft 365 Admin Center → Integrated Apps
 ```
@@ -106,7 +107,8 @@ The add-in appears in Outlook within minutes.
 | [Configuration](docs/configuration.md) | Every `config.yaml` option explained, with defaults |
 | [Halo Setup](docs/halo-setup.md) | Creating the custom field, discovering action IDs |
 | [Azure Setup](docs/azure-setup.md) | App registration, permissions, admin consent |
-| [Deployment](docs/deployment.md) | Docker, Windows Service, Linux systemd, cron |
+| [Add-in Deployment](docs/addin-deployment.md) | Building, hosting, and uploading the Outlook add-in |
+| [Watcher Deployment](docs/deployment.md) | Docker, Windows Service, Linux systemd, cron |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors, log inspection, health checks |
 
 ---
