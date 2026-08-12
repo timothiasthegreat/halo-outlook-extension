@@ -1,0 +1,30 @@
+{
+  "name": "halo-outlook-addin",
+  "version": "0.1.0",
+  "description": "Outlook add-in for creating and tracking HaloPSA tickets from email conversations",
+  "private": true,
+  "scripts": {
+    "build": "webpack --mode production",
+    "dev": "webpack --mode development --watch",
+    "start": "webpack serve --mode development",
+    "lint": "echo 'no lint configured'",
+    "test": "echo 'no tests configured'"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "ts-loader": "^9.5.0",
+    "webpack": "^5.90.0",
+    "webpack-cli": "^5.1.0",
+    "webpack-dev-server": "^5.0.0",
+    "html-webpack-plugin": "^5.6.0",
+    "copy-webpack-plugin": "^12.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@types/office-js": "^1.0.0",
+    "@types/office-runtime": "^1.0.0"
+  }
+}
