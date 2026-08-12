@@ -6,6 +6,35 @@
 
 ---
 
+## Prerequisites
+
+You need all of the following before you can deploy:
+
+| What | Required for | Must have |
+|---|---|---|
+| **HaloPSA instance** with REST API | Both components | Admin access to Configuration → Integrations → Halo API. Must be reachable over HTTPS. Self-hosted or Halo‑hosted both work. |
+| **OAuth2 client credentials** in Halo | Watcher service | Client ID + client secret from an OAuth Application (grant type: Client Credentials, scope: `all`). API keys **cannot** post ticket actions — OAuth is required. |
+| **Custom field** on Halo tickets | Both components | A text-type custom field (ticket‑scoped) to store Exchange `conversationId`. Must be added to every ticket type you want to track. System name must be alphanumeric only (e.g. `ticketconvid`). |
+| **Ticket Action IDs** | Both components | Numeric IDs for "Email Received" (inbound) and "Email Sent" (outbound). Usually `0` and `16` — verify with `scripts/setup_check.py --discover-actions`. |
+| **Azure AD app registration** | Watcher service | Application permission `Mail.Read` granted with admin consent. Provides the `graph.tenant_id`, `graph.client_id`, and `graph.client_secret` for `config.yaml`. |
+| **Exchange Online mailbox** | Watcher service | A licensed Exchange Online mailbox whose email address goes in `graph.user_email`. This is the address the user reads in Outlook — the one customers actually send to. |
+| **Python 3.11+** | Watcher service | On the machine that runs the watcher (Docker, Windows, or Linux). |
+| **Always‑on environment** | Watcher service | Docker, Windows Service, Linux systemd, or cron. The watcher must run continuously to capture messages when Outlook is closed. |
+| **Microsoft 365 tenant** | Outlook add-in | Your org's tenant. The add-in is uploaded to Admin Center → Integrated Apps. |
+| **Node.js 18+** | Outlook add-in | For building the add-in's static assets (one‑time: `npm install && npm run build`). Not needed at runtime. |
+| **Static web hosting** | Outlook add-in | Any HTTPS web server to host the built `dist/` folder. GitHub Pages, Azure Static Web Apps, S3, or self‑hosted all work. |
+
+### Before you start — run the pre‑flight check
+
+```bash
+cp config.example.yaml config.yaml   # fill in your values
+python scripts/setup_check.py        # validates everything
+```
+
+If it passes, you're ready. If not, the output tells you exactly what's missing.
+
+---
+
 ## How It Works
 
 Two components, one repository:
@@ -82,26 +111,6 @@ The add-in appears in Outlook within minutes.
 
 ---
 
-## Requirements
-
-### Watcher
-- Python 3.11+
-- HaloPSA (self-hosted or Halo-hosted) with API access
-- Azure AD app registration with `Mail.Read` application permission
-- Always-on environment (Docker, Windows Service, Linux systemd, or cron)
-
-### Add-in
-- Microsoft 365 tenant with Outlook
-- Node.js 18+ for building
-- Static web hosting (GitHub Pages, Azure, any web server)
-
-### HaloPSA
-- A **custom field** (text, ticket-scoped) to store `conversationId`
-- OAuth2 application credentials (client ID + secret)
-- Ticket Action IDs for "Email Received" and "Email Sent" (discoverable via setup script)
-
----
-
 ## Architecture
 
 ```
@@ -124,8 +133,8 @@ The add-in appears in Outlook within minutes.
 1. **User clicks "Create Ticket" in Outlook** → Add-in calls Halo API, creates ticket with `conversationId` in custom field
 2. **Watcher polls Graph API** → Finds new messages in watched conversations
 3. **Dedup & direction** → Skips already-synced messages, determines inbound vs outbound
-4. **Journals to Halo** → Posts ticket action with correct `outcome_id`
-5. **OnMessageSend** → Add-in intercepts outbound sends, journals instantly (future enhancement; currently watcher handles it)
+4. **Journals to Halo** → Posts ticket action with correct `outcome_id`; downloads and attaches file attachments automatically
+5. **Staleness detection** → Conversations idle for longer than `watcher.stale_conversation_days` are automatically un-watched
 
 ---
 
