@@ -18,13 +18,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import signal
 import sys
-from pathlib import Path
 
 import structlog
 
-from watcher.config import HaloActionsConfig, load_config
+from watcher.config import load_config
 from watcher.graph_client import GraphClient
 from watcher.halo_client import HaloClient
 from watcher.state import StateStore

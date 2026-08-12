@@ -23,10 +23,12 @@ class SyncEngine:
     2. Dedup against synced_messages table
     3. Determine direction (sent vs received)
     4. Post action to Halo ticket with correct outcome_id
-    5. Mark messages as synced
+    5. Download and attach any file attachments
+    6. Mark messages as synced
 
     Usage:
-        async with StateStore(...) as state, HaloClient(...) as halo, GraphClient(...) as graph:
+        async with StateStore(...) as state, HaloClient(...) as halo, \
+                   GraphClient(...) as graph:
             engine = SyncEngine(config, halo, graph, state)
             await engine.sync_once()
     """
@@ -48,7 +50,7 @@ class SyncEngine:
         """Run one complete sync cycle.
 
         Returns:
-            Dict with sync statistics: {conversations_checked, messages_new, messages_synced, errors}.
+            Dict with sync statistics.
         """
         stats: dict[str, int] = {
             "conversations_checked": 0,
@@ -85,7 +87,9 @@ class SyncEngine:
         logger.info("sync_complete", **stats)
         return stats
 
-    async def _sync_conversation(self, conversation_id: str, ticket_id: int) -> int:
+    async def _sync_conversation(
+        self, conversation_id: str, ticket_id: int
+    ) -> int:
         """Sync one conversation's new messages to its ticket.
 
         Returns count of newly synced messages.
@@ -129,7 +133,12 @@ class SyncEngine:
             body_html = msg.get("body", {}).get("content", f"<p>{body_preview}</p>")
 
             note = f"Subject: {subject}\nFrom: {from_address}\n\n{body_preview}"
-            note_html = f"<p><strong>Subject:</strong> {subject}<br><strong>From:</strong> {from_address}</p>{body_html}"
+            note_html = (
+                "<p><strong>Subject:</strong> "
+                f"{_escape_html(subject)}<br>"
+                f"<strong>From:</strong> {_escape_html(from_address)}</p>"
+                f"{body_html}"
+            )
 
             direction_label = "outbound" if is_from_user else "inbound"
 
@@ -150,6 +159,10 @@ class SyncEngine:
                     internet_message_id=internet_message_id[:50],
                 )
                 raise
+
+            # Process attachments if present
+            if msg.get("hasAttachments", False):
+                await self._sync_attachments(ticket_id, msg)
 
             # Mark as synced
             await self._state.mark_synced(conversation_id, internet_message_id)
@@ -172,9 +185,89 @@ class SyncEngine:
 
         return synced_count
 
+    async def _sync_attachments(
+        self, ticket_id: int, msg: dict[str, Any]
+    ) -> None:
+        """Download file attachments and attach them to the Halo ticket."""
+        graph_id = msg.get("id", "")
+        if not graph_id:
+            return
+
+        try:
+            attachments = await self._graph.get_message_attachments(graph_id)
+        except Exception:
+            logger.warning(
+                "attachment_list_failed",
+                ticket_id=ticket_id,
+                exc_info=True,
+            )
+            return
+
+        attachment_count = 0
+        for att in attachments:
+            # Only download file attachments (skip inline images / item attachments)
+            odata_type = att.get("@odata.type", "")
+            if not odata_type.endswith("#microsoft.graph.fileAttachment"):
+                continue
+
+            try:
+                content = await self._graph.get_attachment_content(
+                    graph_id, att["id"]
+                )
+                if not content:
+                    continue
+
+                max_size = 10 * 1024 * 1024  # 10 MB limit per attachment
+                if len(content) > max_size:
+                    logger.warning(
+                        "attachment_too_large",
+                        name=att.get("name"),
+                        size=len(content),
+                    )
+                    continue
+
+                await self._halo.attach_to_ticket(
+                    ticket_id=ticket_id,
+                    filename=att.get("name", "attachment"),
+                    content=content,
+                    content_type=att.get(
+                        "contentType", "application/octet-stream"
+                    ),
+                )
+                attachment_count += 1
+            except Exception:
+                logger.warning(
+                    "attachment_download_failed",
+                    attachment_name=att.get("name"),
+                    exc_info=True,
+                )
+
+        if attachment_count:
+            logger.info(
+                "attachments_journaled",
+                ticket_id=ticket_id,
+                count=attachment_count,
+            )
+
     async def _handle_stale(self) -> None:
         """Find and mark stale conversations."""
         stale_days = self._config.watcher.stale_conversation_days
         stale_convs = await self._state.find_stale_conversations(stale_days)
         for conv_id in stale_convs:
             await self._state.mark_stale(conv_id)
+        if stale_convs:
+            logger.info(
+                "stale_conversations_marked",
+                count=len(stale_convs),
+                stale_days=stale_days,
+            )
+
+
+def _escape_html(text: str) -> str:
+    """Minimal HTML escape for subject/from fields."""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )

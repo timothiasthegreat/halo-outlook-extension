@@ -53,11 +53,9 @@ class HaloClient:
     async def _ensure_token(self) -> None:
         """Acquire or refresh the OAuth2 access token."""
         now = time.monotonic()
-        # Refresh 60s before expiry to avoid race conditions
         if self._access_token and now < self._token_expiry - 60:
             return
 
-        # Prefer refresh over re-auth
         if self._refresh_token:
             try:
                 await self._refresh_access_token()
@@ -110,7 +108,12 @@ class HaloClient:
     # ── retry logic ────────────────────────────────────────────
 
     async def _request(
-        self, method: str, path: str, *, json: Any = None, params: dict[str, Any] | None = None
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Any = None,
+        params: dict[str, Any] | None = None,
     ) -> httpx.Response:
         """Make an authenticated request with retry on 429/5xx."""
         assert self._client is not None
@@ -129,7 +132,6 @@ class HaloClient:
             if response.status_code < 500 and response.status_code != 429:
                 return response
 
-            # Exponential backoff: 1s, 2s, 4s
             delay = 2**attempt
             logger.warning(
                 "retrying_request",
@@ -141,7 +143,7 @@ class HaloClient:
             )
             await _async_sleep(delay)
 
-        return response  # Return last response after retries exhausted
+        return response
 
     # ── tickets ────────────────────────────────────────────────
 
@@ -154,18 +156,7 @@ class HaloClient:
         user_id: int | None = None,
         customfield_value: str | None = None,
     ) -> dict[str, Any]:
-        """Create a new ticket.
-
-        Args:
-            summary: Ticket subject (truncated to 70 chars recommended).
-            details_html: HTML body for the ticket.
-            tickettype_id: Ticket type ID (defaults to config default).
-            user_id: Halo user ID for the ticket reporter.
-            customfield_value: Value for the conversationId custom field.
-
-        Returns:
-            Created ticket data dict (includes 'id' field).
-        """
+        """Create a new ticket."""
         payload: dict[str, Any] = {
             "summary": summary[:70],
             "details_html": details_html,
@@ -194,13 +185,12 @@ class HaloClient:
     async def update_ticket_custom_field(
         self, ticket_id: int, value: str
     ) -> dict[str, Any]:
-        """Update the conversationId custom field on a ticket.
-
-        Uses POST with id field (Halo quirk: PATCH/PUT return 405).
-        """
+        """Update the conversationId custom field on a ticket."""
         payload = {
             "id": ticket_id,
-            "customfields": [{"id": self._config.custom_field_conv_id, "value": value}],
+            "customfields": [
+                {"id": self._config.custom_field_conv_id, "value": value}
+            ],
         }
         response = await self._request("POST", "/Tickets", json=[payload])
         response.raise_for_status()
@@ -229,17 +219,7 @@ class HaloClient:
         sendemail: bool = False,
         hiddenfromuser: bool = False,
     ) -> dict[str, Any]:
-        """Create a ticket action (journal entry).
-
-        Args:
-            ticket_id: Target ticket ID.
-            outcome_id: Action outcome ID (0=inbound, 16=outbound, 7=internal).
-            note: Plain text note body.
-            note_html: HTML note body.
-            email_message_id: internetMessageId for dedup (set but Halo may ignore).
-            sendemail: If True, triggers an actual email send.
-            hiddenfromuser: If True, action hidden from customer portal.
-        """
+        """Create a ticket action (journal entry)."""
         payload: dict[str, Any] = {
             "ticket_id": ticket_id,
             "outcome_id": outcome_id,
@@ -263,14 +243,54 @@ class HaloClient:
         )
         return action
 
-    async def list_actions(self, ticket_id: int, *, top: int = 100) -> list[dict[str, Any]]:
+    async def list_actions(
+        self, ticket_id: int, *, top: int = 100
+    ) -> list[dict[str, Any]]:
         """List recent actions on a ticket."""
         response = await self._request(
-            "GET", "/Actions", params={"ticket_id": ticket_id, "$top": str(top)}
+            "GET", "/Actions",
+            params={"ticket_id": ticket_id, "$top": str(top)},
         )
         response.raise_for_status()
         data = response.json()
-        return data if isinstance(data, list) else data.get("actions", data.get("value", []))
+        return data if isinstance(data, list) else data.get(
+            "actions", data.get("value", [])
+        )
+
+    # ── attachments ────────────────────────────────────────────
+
+    async def attach_to_ticket(
+        self,
+        ticket_id: int,
+        filename: str,
+        content: bytes,
+        *,
+        content_type: str = "application/octet-stream",
+    ) -> dict[str, Any]:
+        """Upload a file attachment to a ticket.
+
+        Posts to Halo's attachment endpoint with base64-encoded content.
+        """
+        import base64
+
+        payload = [
+            {
+                "ticket_id": ticket_id,
+                "filename": filename,
+                "contenttype": content_type,
+                "data_base64": base64.b64encode(content).decode("ascii"),
+            }
+        ]
+        response = await self._request("POST", "/Attachments", json=payload)
+        response.raise_for_status()
+        data = response.json()
+        logger.info(
+            "attachment_uploaded",
+            ticket_id=ticket_id,
+            filename=filename,
+            size=len(content),
+        )
+        return data[0] if isinstance(data, list) else data
 
 
 async def _async_sleep(seconds: float) -> None:
