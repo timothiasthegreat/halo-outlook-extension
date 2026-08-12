@@ -7,3 +7,5 @@ __pycache__/
 .pytest_cache/
 *.pyc
 state.db
+add-in/node_modules/
+add-in/dist/
