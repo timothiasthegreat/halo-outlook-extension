@@ -1,0 +1,25 @@
+# Halo Outlook Extension — Docker Compose
+# One-command deployment for the watcher service.
+#
+# Usage:
+#   1. Copy config.example.yaml to config.yaml and fill in your values
+#   2. docker compose up -d
+#   3. Check health: curl http://localhost:8888/health
+
+version: "3.8"
+
+services:
+  watcher:
+    build: .
+    container_name: halo-outlook-watcher
+    restart: unless-stopped
+    ports:
+      - "8888:8888"   # Health-check HTTP endpoint
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro   # Config (read-only)
+      - watcher_state:/app                   # Persistent state.db
+    environment:
+      - PYTHONUNBUFFERED=1
+
+volumes:
+  watcher_state:

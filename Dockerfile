@@ -1,5 +1,8 @@
 # Halo Outlook Extension — Watcher Dockerfile
 # Multi-stage build for a small production image.
+#
+# The watcher runs as a daemon by default with a health-check server
+# on port 8888. Override CMD with --once for cron-based deployment.
 
 FROM python:3.11-slim AS builder
 
@@ -29,10 +32,13 @@ RUN useradd --create-home --shell /bin/bash watcher && \
 
 USER watcher
 
-# Health check
+# Health check — probes the FastAPI health endpoint
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)"
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8888/health')"
+
+# Expose health-check port
+EXPOSE 8888
 
 # Default: daemon mode (override with --once for cron)
 ENTRYPOINT ["python", "-m", "watcher.watcher"]
-CMD ["--config", "/app/config.yaml"]
+CMD ["--config", "/app/config.yaml", "--health-port", "8888"]
