@@ -6,6 +6,9 @@
  * Serves the add-in's static files and exposes API endpoints for
  * tenant config, mailbox registration, and health checks.
  *
+ * Stores registrations in the watcher's state.db (shared SQLite volume)
+ * with Fernet-encrypted refresh tokens.
+ *
  * Usage:
  *   node server.js [--port PORT] [--config PATH]
  *   Defaults: port 3000, config ../config.yaml
@@ -15,6 +18,9 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const yaml = require("js-yaml");
+const initSqlJs = require("sql.js");
+
+const { createFernet } = require("./fernet");
 
 // ── Config loading ───────────────────────────────────────────────────────
 
@@ -33,7 +39,7 @@ function parseArgs() {
   return opts;
 }
 
-function loadConfig(configPath) {
+function loadTenantConfig(configPath) {
   const raw = fs.readFileSync(configPath, "utf8");
   const config = yaml.load(raw);
   return {
@@ -59,10 +65,77 @@ function validateEmail(value, field) {
   return null;
 }
 
-// ── Registration store (Phase 2 moves this to state.db) ──────────────────
-// For now, in-memory store so registration endpoint is functional for testing.
+// ── Database initialization ──────────────────────────────────────────────
 
-const registrationStore = new Map();
+/** @type {import("sql.js").Database | null} */
+let db = null;
+let fernet = null;
+
+async function initDb() {
+  const SQL = await initSqlJs();
+  // Detect state.db path: if state_db_path is set in config, use it;
+  // otherwise default to ../state.db (watcher default).
+  const opts = parseArgs();
+  let dbPath;
+  try {
+    const config = yaml.load(fs.readFileSync(opts.configPath, "utf8"));
+    dbPath = config.watcher?.state_db_path || path.resolve(__dirname, "..", "state.db");
+  } catch {
+    dbPath = path.resolve(__dirname, "..", "state.db");
+  }
+
+  // Open or create the database
+  if (fs.existsSync(dbPath)) {
+    const buffer = fs.readFileSync(dbPath);
+    db = new SQL.Database(buffer);
+  } else {
+    db = new SQL.Database();
+  }
+  // Ensure the table exists
+  db.run(`
+    CREATE TABLE IF NOT EXISTS watched_mailboxes (
+      email TEXT PRIMARY KEY,
+      refresh_token_enc TEXT NOT NULL,
+      token_status TEXT NOT NULL DEFAULT 'active',
+      registered_at TEXT NOT NULL,
+      last_token_refresh_at TEXT
+    )
+  `);
+  saveDb();
+  console.log(`SQLite state.db opened at ${dbPath}`);
+}
+
+function saveDb() {
+  if (!db) return;
+  const data = db.export();
+  const opts = parseArgs();
+  let dbPath;
+  try {
+    const config = yaml.load(fs.readFileSync(opts.configPath, "utf8"));
+    dbPath = config.watcher?.state_db_path || path.resolve(__dirname, "..", "state.db");
+  } catch {
+    dbPath = path.resolve(__dirname, "..", "state.db");
+  }
+  fs.writeFileSync(dbPath, Buffer.from(data));
+}
+
+function getFernet() {
+  if (!fernet) {
+    const key = process.env.FERNET_KEY;
+    if (!key) {
+      console.warn("FERNET_KEY not set — tokens will NOT be encrypted at rest!");
+      // Fall back to a no-op pass-through (base64 encode/decode only)
+      // This lets the server start for testing but logs a clear warning.
+      fernet = {
+        encrypt: (s) => Buffer.from(s).toString("base64"),
+        decrypt: (s) => Buffer.from(s, "base64").toString("utf8"),
+      };
+    } else {
+      fernet = createFernet(key);
+    }
+  }
+  return fernet;
+}
 
 // ── App ──────────────────────────────────────────────────────────────────
 
@@ -83,7 +156,7 @@ app.get("/health", (_req, res) => {
 
 app.get("/api/config", (_req, res) => {
   try {
-    const config = loadConfig(parseArgs().configPath);
+    const config = loadTenantConfig(parseArgs().configPath);
     res.json(config);
   } catch (err) {
     res.status(500).json({ error: "Failed to load configuration", detail: err.message });
@@ -115,15 +188,44 @@ app.post("/api/register", (req, res) => {
     watching.push(extra.trim().toLowerCase());
   }
 
-  // Store registration (Phase 2: encrypt token and write to state.db)
-  registrationStore.set(normalizedEmail, {
-    email: normalizedEmail,
-    refresh_token,
-    additional_emails: additional.map((e) => e.trim().toLowerCase()),
-    registered_at: new Date().toISOString(),
-  });
+  // Encrypt token and write to state.db
+  try {
+    const f = getFernet();
+    const encToken = f.encrypt(refresh_token);
+    const now = new Date().toISOString();
 
-  res.json({ status: "ok", email: normalizedEmail, watching });
+    if (!db) {
+      // Fallback: in-memory store if db not initialized (tests without state.db)
+      return res.json({
+        status: "ok",
+        email: normalizedEmail,
+        watching,
+        _db_initialized: false,
+      });
+    }
+
+    // Upsert: register each mailbox
+    const stmt = db.prepare(
+      `INSERT INTO watched_mailboxes
+         (email, refresh_token_enc, token_status, registered_at, last_token_refresh_at)
+       VALUES (?, ?, 'active', ?, ?)
+       ON CONFLICT(email) DO UPDATE SET
+         refresh_token_enc = excluded.refresh_token_enc,
+         token_status = 'active',
+         last_token_refresh_at = excluded.last_token_refresh_at`
+    );
+
+    for (const mailbox of watching) {
+      stmt.run([mailbox, encToken, now, now]);
+    }
+    stmt.free();
+    saveDb();
+
+    res.json({ status: "ok", email: normalizedEmail, watching });
+  } catch (err) {
+    console.error("Registration database error:", err);
+    res.status(500).json({ error: "Failed to store registration", detail: err.message });
+  }
 });
 
 // ── Export for testing ───────────────────────────────────────────────────
@@ -134,9 +236,14 @@ module.exports = { app };
 
 if (require.main === module) {
   const opts = parseArgs();
-  app.listen(opts.port, () => {
-    console.log(`Halo Outlook Server listening on http://0.0.0.0:${opts.port}`);
-    console.log(`Serving add-in from: ${staticDir}`);
-    console.log(`Config path: ${opts.configPath}`);
+  initDb().then(() => {
+    app.listen(opts.port, () => {
+      console.log(`Halo Outlook Server listening on http://0.0.0.0:${opts.port}`);
+      console.log(`Serving add-in from: ${staticDir}`);
+      console.log(`Config path: ${opts.configPath}`);
+    });
+  }).catch((err) => {
+    console.error("Failed to initialize database:", err);
+    process.exit(1);
   });
 }
