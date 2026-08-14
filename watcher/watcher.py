@@ -36,17 +36,26 @@ HEALTH_PORT = 8888
 
 def setup_logging(log_level: str = "INFO") -> None:
     """Configure structured JSON logging to stdout."""
+    import logging
+    import sys
+
+    level = getattr(logging, log_level.upper(), logging.INFO)
     structlog.configure(
         processors=[
-            structlog.stdlib.filter_by_level,
             structlog.stdlib.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.dev.ConsoleRenderer(),
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
+    )
+    # Also configure the stdlib root logger for output
+    logging.basicConfig(
+        format="%(message)s",
+        stream=sys.stdout,
+        level=level,
     )
 
 

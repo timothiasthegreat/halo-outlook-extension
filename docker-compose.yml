@@ -1,25 +1,31 @@
 # Halo Outlook Extension — Docker Compose
-# One-command deployment for the watcher service.
+# One-command deployment: Express (static + API) + Watcher daemon.
 #
 # Usage:
 #   1. Copy config.example.yaml to config.yaml and fill in your values
 #   2. docker compose up -d
-#   3. Check health: curl http://localhost:8888/health
+#   3. Check health: curl http://localhost:3000/health
+#
+# The add-in is served from http://localhost:3000/taskpane.html.
+# API endpoints: /api/config, /api/register, /health
 
 version: "3.8"
 
 services:
-  watcher:
+  halo-outlook:
     build: .
-    container_name: halo-outlook-watcher
+    container_name: halo-outlook-extension
     restart: unless-stopped
     ports:
-      - "8888:8888"   # Health-check HTTP endpoint
+      - "3000:3000"   # Express: static add-in + API endpoints
+      - "8888:8888"   # Watcher health-check (internal, optional)
     volumes:
       - ./config.yaml:/app/config.yaml:ro   # Config (read-only)
-      - watcher_state:/app                   # Persistent state.db
+      - watcher_state:/app/state            # Persistent state.db + fernet.key
     environment:
       - PYTHONUNBUFFERED=1
+      - FERNET_KEY_FILE=/app/state/fernet.key
+      # FERNET_KEY — auto-generated on first run if not set
 
 volumes:
   watcher_state:
