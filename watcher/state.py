@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     ticket_id INTEGER NOT NULL,
     created_at TEXT NOT NULL,
     last_sync_at TEXT,
-    is_stale INTEGER DEFAULT 0
+    is_stale INTEGER DEFAULT 0,
+    watched_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS synced_messages (
@@ -104,25 +105,27 @@ class StateStore:
     # ── conversation tracking ──────────────────────────────────
 
     async def track_conversation(
-        self, conversation_id: str, ticket_id: int
-    ) -> None:
-        """Record a conversation → ticket mapping.
+            self, conversation_id: str, ticket_id: int, watched_by: str | None = None
+        ) -> None:
+            """Record a conversation → ticket mapping.
 
-        If the conversation is already tracked, updates last_sync_at.
-        """
-        now = _utcnow()
-        assert self._conn is not None
-        await self._conn.execute(
-            """INSERT INTO conversations (conversation_id, ticket_id, created_at, last_sync_at)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(conversation_id) DO UPDATE SET
-                   ticket_id = excluded.ticket_id,
-                   last_sync_at = excluded.last_sync_at,
-                   is_stale = 0""",
-            (conversation_id, ticket_id, now, now),
-        )
-        await self._conn.commit()
-        logger.debug("conversation_tracked", conversation_id=conversation_id, ticket_id=ticket_id)
+            If the conversation is already tracked, updates last_sync_at.
+            watched_by is the email address of the mailbox watching this conversation.
+            """
+            now = _utcnow()
+            assert self._conn is not None
+            await self._conn.execute(
+                """INSERT INTO conversations (conversation_id, ticket_id, created_at, last_sync_at, watched_by)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(conversation_id) DO UPDATE SET
+                       ticket_id = excluded.ticket_id,
+                       last_sync_at = excluded.last_sync_at,
+                       is_stale = 0,
+                       watched_by = COALESCE(excluded.watched_by, conversations.watched_by)""",
+                (conversation_id, ticket_id, now, now, watched_by),
+            )
+            await self._conn.commit()
+            logger.debug("conversation_tracked", conversation_id=conversation_id, ticket_id=ticket_id)
 
     async def get_ticket_id(self, conversation_id: str) -> int | None:
         """Get the ticket ID for a tracked conversation, or None."""
@@ -138,7 +141,7 @@ class StateStore:
         """Get all active (non-stale) conversation → ticket mappings."""
         assert self._conn is not None
         cursor = await self._conn.execute(
-            "SELECT conversation_id, ticket_id, last_sync_at FROM conversations WHERE is_stale = 0"
+            "SELECT conversation_id, ticket_id, last_sync_at, watched_by FROM conversations WHERE is_stale = 0"
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]

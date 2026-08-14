@@ -20,6 +20,7 @@ class GraphClient:
     """Async client for Microsoft Graph API with token management.
 
     Uses OAuth2 client credentials grant (application permission Mail.Read).
+    Supports per-user mailbox queries via the user_email parameter.
 
     Usage:
         async with GraphClient(config) as client:
@@ -152,10 +153,15 @@ class GraphClient:
     # ── messages ───────────────────────────────────────────────
 
     async def get_messages_by_conversation(
-        self, conversation_id: str
+        self, conversation_id: str, *, user_email: str | None = None
     ) -> list[dict[str, Any]]:
-        """Fetch all messages in a given conversation."""
-        user_path = f"/users/{self._config.user_email}/messages"
+        """Fetch all messages in a given conversation.
+
+        If user_email is provided, queries that specific mailbox.
+        Otherwise uses the configured user_email from GraphConfig.
+        """
+        email = user_email or self._config.user_email
+        user_path = f"/users/{email}/messages"
         params = {
             "$filter": f"conversationId eq '{conversation_id}'",
             "$select": (
@@ -193,10 +199,7 @@ class GraphClient:
     async def get_message_attachments(
         self, message_id: str
     ) -> list[dict[str, Any]]:
-        """Fetch attachment metadata for a message.
-
-        Returns list of attachment objects (id, name, contentType, size).
-        """
+        """Fetch attachment metadata for a message."""
         user_path = (
             f"/users/{self._config.user_email}"
             f"/messages/{message_id}/attachments"
