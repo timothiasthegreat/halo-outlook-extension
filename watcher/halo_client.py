@@ -1,46 +1,63 @@
-"""Async HTTP client for HaloPSA REST API."""
+"""Async HTTP client for HaloPSA REST API with per-user token support.
+
+Uses a TokenManager to obtain per-user access tokens instead of
+client-credentials. The constructor takes a TokenManager and user email;
+token lifecycle is managed externally.
+
+All ticket/action endpoints require JSON arrays (Halo quirk: POST body
+must be [{...}], not {...}).
+
+Usage:
+    tm = TokenManager(halo_config_dict, state_store, fernet_key)
+    async with HaloClient(tm, "user@example.com", api_url) as client:
+        tickets = await client.list_tickets(active_only=True)
+"""
 
 from __future__ import annotations
 
+import base64
 import time
 from typing import Any
 
 import httpx
 import structlog
 
-from watcher.config import HaloConfig
-
 logger = structlog.get_logger()
 
 
 class HaloClient:
-    """Async client for HaloPSA API with OAuth2 token management.
+    """Async client for HaloPSA API with per-user OAuth2 token management.
 
-    Handles token acquisition, refresh, and retries with exponential backoff.
-    All ticket/action endpoints require JSON arrays (Halo quirk: POST body
-    must be [{...}], not {...}).
-
-    Usage:
-        async with HaloClient(config) as client:
-            tickets = await client.list_tickets(active_only=True)
+    Token acquisition and refresh is delegated to TokenManager.
+    Each instance is bound to a single user's mailbox for attribution.
     """
 
-    def __init__(self, config: HaloConfig):
-        self._config = config
+    def __init__(
+        self,
+        token_manager: "TokenManager",
+        user_email: str,
+        api_url: str,
+        *,
+        custom_field_conv_id: int = 285,
+        default_ticket_type_id: int = 1,
+    ):
+        from watcher.token_manager import TokenManager  # noqa: F811
+
+        self._token_manager: TokenManager = token_manager
+        self._user_email = user_email
+        self._api_url = api_url.rstrip("/")
+        self._custom_field_conv_id = custom_field_conv_id
+        self._default_ticket_type_id = default_ticket_type_id
         self._client: httpx.AsyncClient | None = None
-        self._access_token: str | None = None
-        self._token_expiry: float = 0.0
-        self._refresh_token: str | None = None
 
     # ── lifecycle ──────────────────────────────────────────────
 
     async def __aenter__(self) -> "HaloClient":
         self._client = httpx.AsyncClient(
-            base_url=self._config.api_url,
+            base_url=self._api_url,
             timeout=httpx.Timeout(30.0),
             headers={"Accept": "application/json"},
         )
-        await self._ensure_token()
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -48,64 +65,7 @@ class HaloClient:
             await self._client.aclose()
             self._client = None
 
-    # ── auth ───────────────────────────────────────────────────
-
-    async def _ensure_token(self) -> None:
-        """Acquire or refresh the OAuth2 access token."""
-        now = time.monotonic()
-        if self._access_token and now < self._token_expiry - 60:
-            return
-
-        if self._refresh_token:
-            try:
-                await self._refresh_access_token()
-                return
-            except Exception:
-                logger.warning("token_refresh_failed", exc_info=True)
-
-        await self._acquire_token()
-
-    async def _acquire_token(self) -> None:
-        """Acquire a new token via client credentials grant."""
-        assert self._client is not None
-        response = await self._client.post(
-            self._config.token_url,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": self._config.client_id,
-                "client_secret": self._config.client_secret,
-                "scope": "all",
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        response.raise_for_status()
-        data = response.json()
-        self._access_token = data["access_token"]
-        self._refresh_token = data.get("refresh_token")
-        self._token_expiry = time.monotonic() + data.get("expires_in", 3600)
-        logger.info("token_acquired", expires_in=data.get("expires_in"))
-
-    async def _refresh_access_token(self) -> None:
-        """Refresh the access token."""
-        assert self._client is not None
-        response = await self._client.post(
-            self._config.token_url,
-            data={
-                "grant_type": "refresh_token",
-                "client_id": self._config.client_id,
-                "client_secret": self._config.client_secret,
-                "refresh_token": self._refresh_token,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        response.raise_for_status()
-        data = response.json()
-        self._access_token = data["access_token"]
-        self._refresh_token = data.get("refresh_token", self._refresh_token)
-        self._token_expiry = time.monotonic() + data.get("expires_in", 3600)
-        logger.info("token_refreshed")
-
-    # ── retry logic ────────────────────────────────────────────
+    # ── request helpers ────────────────────────────────────────
 
     async def _request(
         self,
@@ -120,13 +80,13 @@ class HaloClient:
 
         max_retries = 3
         for attempt in range(max_retries):
-            await self._ensure_token()
+            access_token = await self._token_manager.get_token_for(self._user_email)
             response = await self._client.request(
                 method,
                 path,
                 json=json,
                 params=params,
-                headers={"Authorization": f"Bearer {self._access_token}"},
+                headers={"Authorization": f"Bearer {access_token}"},
             )
 
             if response.status_code < 500 and response.status_code != 429:
@@ -160,13 +120,13 @@ class HaloClient:
         payload: dict[str, Any] = {
             "summary": summary[:70],
             "details_html": details_html,
-            "tickettype_id": tickettype_id or self._config.default_ticket_type_id,
+            "tickettype_id": tickettype_id or self._default_ticket_type_id,
         }
         if user_id:
             payload["user_id"] = user_id
         if customfield_value:
             payload["customfields"] = [
-                {"id": self._config.custom_field_conv_id, "value": customfield_value}
+                {"id": self._custom_field_conv_id, "value": customfield_value}
             ]
 
         response = await self._request("POST", "/Tickets", json=[payload])
@@ -189,7 +149,7 @@ class HaloClient:
         payload = {
             "id": ticket_id,
             "customfields": [
-                {"id": self._config.custom_field_conv_id, "value": value}
+                {"id": self._custom_field_conv_id, "value": value}
             ],
         }
         response = await self._request("POST", "/Tickets", json=[payload])
@@ -267,12 +227,7 @@ class HaloClient:
         *,
         content_type: str = "application/octet-stream",
     ) -> dict[str, Any]:
-        """Upload a file attachment to a ticket.
-
-        Posts to Halo's attachment endpoint with base64-encoded content.
-        """
-        import base64
-
+        """Upload a file attachment to a ticket."""
         payload = [
             {
                 "ticket_id": ticket_id,
