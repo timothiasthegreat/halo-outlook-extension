@@ -14,7 +14,7 @@ import * as ReactDOM from "react-dom";
 
 import Banner from "./banner";
 import * as halo from "./halo";
-import config from "./config";
+import { loadConfig, getConfig } from "./config";
 
 // ── state ──────────────────────────────────────────────────────
 
@@ -99,7 +99,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       subject: "",
       senderEmail: "",
       mode: "untracked",
-      ticketTypeId: config.defaultTicketTypeId,
+      ticketTypeId: getConfig().defaultTicketTypeId,
       searchQuery: "",
       searchResults: [],
       searching: false,
@@ -109,8 +109,9 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
   }
 
   async componentDidMount(): Promise<void> {
-    // Initialize Office.js
+    // Load runtime config from Express server first, then initialize
     Office.onReady()
+      .then(() => loadConfig())
       .then(() => this.loadContext())
       .catch((err) => this.setState({ error: err.message, loading: false }));
   }
@@ -213,7 +214,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
         try {
           await halo.createAction({
             ticket_id: ticket.id,
-            outcome_id: config.actions.emailReceived,
+            outcome_id: getConfig().actions.emailReceived,
             note: `Subject: ${subject}\nFrom: ${senderEmail}\n\n${stripHtml(body)}`,
             note_html: body || `<p>Email from ${senderEmail}</p>`,
             email_message_id: internetMessageId,

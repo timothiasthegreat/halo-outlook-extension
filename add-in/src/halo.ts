@@ -4,9 +4,13 @@
  * Handles OAuth2 auth code flow with PKCE and all ticket/action endpoints
  * needed by the add-in UI. Uses the Office.js dialog API for auth redirects
  * and localStorage for token persistence.
+ *
+ * Config is fetched dynamically from /api/config at startup (see config.ts).
+ * All Halo URL / client ID references use getConfig() so they reflect the
+ * current tenant config without requiring a rebuild.
  */
 
-import config from "./config";
+import { getConfig } from "./config";
 
 // ── types ──────────────────────────────────────────────────────
 
@@ -99,11 +103,12 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
 async function authorizeViaDialog(): Promise<void> {
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = await generateCodeChallenge(codeVerifier);
+  const cfg = getConfig();
 
   const authUrl =
-    `${config.haloUrl}/auth?` +
+    `${cfg.haloUrl}/auth?` +
     `response_type=code&` +
-    `client_id=${encodeURIComponent(config.haloClientId)}&` +
+    `client_id=${encodeURIComponent(cfg.haloClientId)}&` +
     `redirect_uri=${encodeURIComponent(getRedirectUri())}&` +
     `code_challenge=${codeChallenge}&` +
     `code_challenge_method=S256&` +
@@ -121,9 +126,6 @@ async function authorizeViaDialog(): Promise<void> {
         }
         const dialog = result.value;
         dialog.addEventHandler(Office.EventType.DialogMessageReceived, () => {
-          // The redirect URI page posts the auth code back via messageParent
-          // But Office dialog doesn't capture the redirect easily.
-          // Simplified: close on user completion, poll localStorage for token.
           dialog.close();
           resolve();
         });
@@ -145,12 +147,13 @@ function getRedirectUri(): string {
  * Exchange an authorization code for tokens.
  */
 async function exchangeCodeForToken(code: string, codeVerifier: string): Promise<TokenData> {
-  const resp = await fetch(`${config.haloUrl}/auth/token`, {
+  const cfg = getConfig();
+  const resp = await fetch(`${cfg.haloUrl}/auth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "authorization_code",
-      client_id: config.haloClientId,
+      client_id: cfg.haloClientId,
       code,
       redirect_uri: getRedirectUri(),
       code_verifier: codeVerifier,
@@ -167,12 +170,13 @@ async function exchangeCodeForToken(code: string, codeVerifier: string): Promise
 
 async function refreshToken(token: TokenData): Promise<TokenData> {
   if (!token.refresh_token) throw new Error("No refresh token available");
-  const resp = await fetch(`${config.haloUrl}/auth/token`, {
+  const cfg = getConfig();
+  const resp = await fetch(`${cfg.haloUrl}/auth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "refresh_token",
-      client_id: config.haloClientId,
+      client_id: cfg.haloClientId,
       refresh_token: token.refresh_token,
     }),
   });
@@ -188,8 +192,6 @@ async function refreshToken(token: TokenData): Promise<TokenData> {
 async function getAccessToken(): Promise<string> {
   let token = getStoredToken();
   if (!token) {
-    // No stored token — need full auth flow.
-    // For now, return empty and let UI show login prompt.
     throw new Error("Not authenticated — please log in.");
   }
   if (Date.now() > token.expires_at - 60000) {
@@ -212,7 +214,8 @@ async function apiRequest<T>(
   body?: unknown
 ): Promise<T> {
   const token = await getAccessToken();
-  const url = `${config.haloUrl}/api${path}`;
+  const cfg = getConfig();
+  const url = `${cfg.haloUrl}/api${path}`;
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     Accept: "application/json",
@@ -239,12 +242,6 @@ export async function ensureAuthenticated(): Promise<void> {
     await getAccessToken();
   } catch {
     await authorizeViaDialog();
-    // After dialog, we don't have the code (Office dialog limitation).
-    // The user must go through the full PKCE flow which requires a
-    // capture page. In practice, Halo's OAuth may support simpler flows.
-    //
-    // For Phase 3 MVP: if token is missing, show "Login required" in UI.
-    // The deployer can set up a client credentials flow for the add-in.
     throw new Error(
       "Authentication required. Please configure your Halo OAuth credentials and restart the add-in."
     );
@@ -262,15 +259,16 @@ export async function createTicket(params: {
   tickettype_id?: number;
   conversationId: string;
 }): Promise<HaloTicket> {
+  const cfg = getConfig();
   const payload = [
     {
       summary: params.summary.slice(0, 70),
       details_html: params.details_html,
-      tickettype_id: params.tickettype_id ?? config.defaultTicketTypeId,
+      tickettype_id: params.tickettype_id ?? cfg.defaultTicketTypeId,
       user_id: params.user_id,
       customfields: [
         {
-          id: config.customFieldConvId,
+          id: cfg.customFieldConvId,
           value: params.conversationId,
         },
       ],
@@ -304,12 +302,13 @@ export async function linkConversation(
   ticketId: number,
   conversationId: string
 ): Promise<void> {
+  const cfg = getConfig();
   const payload = [
     {
       id: ticketId,
       customfields: [
         {
-          id: config.customFieldConvId,
+          id: cfg.customFieldConvId,
           value: conversationId,
         },
       ],
@@ -369,18 +368,11 @@ export async function listActions(
  * Used by the watcher to find watched conversations.
  */
 export async function getWatchedTickets(): Promise<HaloTicket[]> {
-  // Note: Halo API does NOT support filtering by custom field value.
-  // This is a documentation note — the watcher uses a local SQLite
-  // state store instead. The add-in doesn't need this method; it
-  // queries by conversationId via the state store / Office.js context.
   return [];
 }
 
 // ── Office.js context helpers ───────────────────────────────────
 
-/**
- * Get the current email item's conversationId from Office.js context.
- */
 export function getCurrentConversationId(): Promise<string> {
   return new Promise((resolve, reject) => {
     const item = Office.context.mailbox?.item as Office.MessageRead | undefined;
@@ -392,16 +384,11 @@ export function getCurrentConversationId(): Promise<string> {
     if (convId) {
       resolve(convId);
     } else {
-      // conversationId should always be available on MessageRead.
-      // If it's empty, the item might not be loaded yet.
       resolve("");
     }
   });
 }
 
-/**
- * Get the current email item's internetMessageId from Office.js context.
- */
 export function getCurrentInternetMessageId(): Promise<string> {
   return new Promise((resolve, reject) => {
     const item = Office.context.mailbox?.item;
@@ -418,9 +405,6 @@ export function getCurrentInternetMessageId(): Promise<string> {
   });
 }
 
-/**
- * Get the sender's email address from the current item.
- */
 export function getCurrentSenderEmail(): Promise<string> {
   return new Promise((resolve, reject) => {
     const item = Office.context.mailbox?.item;
@@ -434,9 +418,6 @@ export function getCurrentSenderEmail(): Promise<string> {
   });
 }
 
-/**
- * Get the email subject from the current item.
- */
 export function getCurrentSubject(): Promise<string> {
   return new Promise((resolve, reject) => {
     const item = Office.context.mailbox?.item;
@@ -449,9 +430,6 @@ export function getCurrentSubject(): Promise<string> {
   });
 }
 
-/**
- * Get the email body (prefer HTML) from the current item.
- */
 export function getCurrentBody(): Promise<string> {
   return new Promise((resolve, reject) => {
     const item = Office.context.mailbox?.item;
@@ -459,7 +437,6 @@ export function getCurrentBody(): Promise<string> {
       reject(new Error("No mailbox item available"));
       return;
     }
-    // Office.js provides body.getAsync with coercion type
     (item as Office.MessageRead).body.getAsync(
       Office.CoercionType.Html,
       (result) => {
