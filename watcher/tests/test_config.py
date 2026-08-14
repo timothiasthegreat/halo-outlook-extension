@@ -11,7 +11,7 @@ from watcher.config import Config, GraphConfig, HaloConfig, WatcherConfig, load_
 
 VALID_CONFIG = {
     "halo": {
-        "instance_url": "https://service.firesideit.ca",
+        "instance_url": "https://your-instance.halopsa.com",
         "client_id": "test-client-id",
         "client_secret": "test-client-secret",
     },
@@ -128,7 +128,7 @@ class TestLoadConfig:
             config = load_config(path)
             assert isinstance(config.halo, HaloConfig)
             assert isinstance(config.graph, GraphConfig)
-            assert config.halo.instance_url == "https://service.firesideit.ca"
+            assert config.halo.instance_url == "https://your-instance.halopsa.com"
         finally:
             path.unlink()
 

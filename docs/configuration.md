@@ -25,7 +25,7 @@ watcher:   # Watcher behavior (optional — has defaults)
 
 ```yaml
 halo:
-  instance_url: https://service.firesideit.ca
+  instance_url: https://your-instance.halopsa.com
 ```
 
 The watcher appends `/auth` (OAuth token endpoint) and `/api` (REST API base) automatically. Do not include trailing paths.
@@ -139,7 +139,7 @@ Create this in **Azure Portal → App Registrations → Your App → Certificate
 
 ```yaml
 graph:
-  user_email: tim@firesideit.ca
+  user_email: you@yourcompany.com
 ```
 
 The watcher polls `GET /users/{user_email}/messages` to find new messages in watched conversations. This must match the mailbox the user reads in Outlook.
@@ -221,7 +221,7 @@ Then pass `--health-port 8888` (the container port, not the host port).
 
 ```yaml
 halo:
-  instance_url: https://service.firesideit.ca
+  instance_url: https://your-instance.halopsa.com
   client_id: "halo-oauth-client-id"
   client_secret: "halo-oauth-client-secret"
   actions:
@@ -235,7 +235,7 @@ graph:
   tenant_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
   client_id: "d4c3b2a1-f6e5-0987-dcba-0987654321ef"
   client_secret: "graph-client-secret"
-  user_email: tim@firesideit.ca
+  user_email: you@yourcompany.com
 
 watcher:
   poll_interval_seconds: 90

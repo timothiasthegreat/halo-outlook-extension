@@ -53,7 +53,7 @@ class TestGraphClientMessages:
                         "subject": "Re: Test",
                         "from": {"emailAddress": {"address": "test@example.com"}},
                         "sentDateTime": "2026-08-10T12:05:00Z",
-                        "internetMessageId": "<msg2@firesideit.ca>",
+                        "internetMessageId": "<msg2@example.com>",
                         "conversationId": "conv-123",
                     },
                 ]

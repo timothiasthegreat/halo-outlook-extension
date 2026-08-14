@@ -23,7 +23,7 @@ def make_config() -> Config:
                 "tenant_id": "test-tenant",
                 "client_id": "test-graph-client",
                 "client_secret": "test-graph-secret",
-                "user_email": "tim@firesideit.ca",
+                "user_email": "user@example.com",
             },
         }
     )
@@ -75,7 +75,7 @@ class TestEndToEnd:
             "conv-e2e-2": [
                 {
                     "subject": "Agent reply",
-                    "from": {"emailAddress": {"address": "tim@firesideit.ca"}},
+                    "from": {"emailAddress": {"address": "user@example.com"}},
                     "sentDateTime": "2026-08-11T14:00:00Z",
                     "internetMessageId": "<conv2-outbound@test.com>",
                     "hasAttachments": False,
@@ -102,7 +102,7 @@ class TestEndToEnd:
                 },
                 {
                     "subject": "Tim reply",
-                    "from": {"emailAddress": {"address": "tim@firesideit.ca"}},
+                    "from": {"emailAddress": {"address": "user@example.com"}},
                     "sentDateTime": "2026-08-12T15:05:00Z",
                     "internetMessageId": "<conv3-outbound@test.com>",
                     "hasAttachments": False,

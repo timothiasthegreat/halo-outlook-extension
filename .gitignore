@@ -9,3 +9,4 @@ __pycache__/
 state.db
 add-in/node_modules/
 add-in/dist/
+config.yaml

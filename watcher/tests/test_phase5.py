@@ -24,7 +24,7 @@ def make_config(stale_days: int = 14) -> Config:
                 "tenant_id": "test-tenant",
                 "client_id": "test-graph-client",
                 "client_secret": "test-graph-secret",
-                "user_email": "tim@firesideit.ca",
+                "user_email": "user@example.com",
             },
             "watcher": {
                 "stale_conversation_days": stale_days,

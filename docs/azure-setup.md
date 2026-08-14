@@ -91,7 +91,7 @@ Expected output:
 ```
 ✓ Graph API reachable → https://graph.microsoft.com/v1.0
 ✓ Token acquired (scope: https://graph.microsoft.com/.default)
-✓ Mailbox accessible: tim@firesideit.ca
+✓ Mailbox accessible: you@yourcompany.com
 ```
 
 ---

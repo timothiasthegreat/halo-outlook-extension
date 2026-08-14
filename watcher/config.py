@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 class HaloConfig(BaseModel):
     """HaloPSA connection configuration."""
 
-    instance_url: str = Field(description="HaloPSA instance URL, e.g. https://service.firesideit.ca")
+    instance_url: str = Field(description="HaloPSA instance URL, e.g. https://your-instance.halopsa.com")
     client_id: str = Field(min_length=1, description="OAuth2 client ID")
     client_secret: str = Field(min_length=1, description="OAuth2 client secret")
     actions: HaloActionsConfig = Field(default_factory=lambda: HaloActionsConfig())

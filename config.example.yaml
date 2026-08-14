@@ -3,7 +3,7 @@
 
 # HaloPSA connection
 halo:
-  # Your HaloPSA instance URL (e.g. https://service.firesideit.ca)
+  # Your HaloPSA instance URL (e.g. https://your-instance.halopsa.com)
   instance_url: https://your-instance.halopsa.com
 
   # OAuth2 client credentials (for unattended watcher operation)
@@ -13,7 +13,7 @@ halo:
 
   # Ticket action IDs — discover these from your Halo instance
   # 0  = Email Update (inbound: customer → agent)
-  # 16 = Email User (outbound: agent → customer)  
+  # 16 = Email User (outbound: agent → customer)
   # 7  = Recorded Note (internal)
   actions:
     email_received: 0
@@ -21,7 +21,7 @@ halo:
     internal_note: 7
 
   # Custom field ID that stores the conversationId on tickets
-  # CFticketconvid on service.firesideit.ca is ID 285
+  # Discover yours with: python scripts/setup_check.py --list-custom-fields
   custom_field_conv_id: 285
 
   # Default ticket type for new tickets created from conversations
@@ -38,7 +38,7 @@ graph:
   # Client secret for unattended operation
   client_secret: ""
 
-  # Mailbox to watch (e.g. tim@firesideit.ca)
+  # Mailbox to watch (e.g. you@yourcompany.com)
   user_email: ""
 
 # Watcher behavior

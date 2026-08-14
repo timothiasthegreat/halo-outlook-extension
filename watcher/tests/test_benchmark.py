@@ -22,7 +22,7 @@ def make_config() -> Config:
                 "tenant_id": "test-tenant",
                 "client_id": "test-graph-client",
                 "client_secret": "test-graph-secret",
-                "user_email": "tim@firesideit.ca",
+                "user_email": "user@example.com",
             },
         }
     )

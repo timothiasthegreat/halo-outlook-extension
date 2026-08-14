@@ -8,7 +8,7 @@
  * For self-hosted config: point `configUrl` at a JSON endpoint instead.
  */
 export interface AddinConfig {
-  /** HaloPSA instance URL, e.g. "https://service.firesideit.ca" */
+  /** HaloPSA instance URL, e.g. "https://your-instance.halopsa.com" */
   haloUrl: string;
   /** OAuth2 client ID for auth code flow with PKCE */
   haloClientId: string;
@@ -36,7 +36,7 @@ const config: AddinConfig = {
     emailReceived: 0, // "Email Update" / inbound
     emailSent: 16, // "Email User" / outbound
   },
-  customFieldConvId: 285, // CFticketconvid on service.firesideit.ca
+  customFieldConvId: 285, // CFticketconvid — discover yours with setup_check.py
   defaultTicketTypeId: 1, // Incident — adjust per your instance
 };
 

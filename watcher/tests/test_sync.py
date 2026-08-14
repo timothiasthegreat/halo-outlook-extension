@@ -23,7 +23,7 @@ def make_config() -> Config:
                 "tenant_id": "test-tenant",
                 "client_id": "test-graph-client",
                 "client_secret": "test-graph-secret",
-                "user_email": "tim@firesideit.ca",
+                "user_email": "user@example.com",
             },
         }
     )
@@ -107,7 +107,7 @@ class TestSyncEngine:
             return_value=[
                 {
                     "subject": "Outbound from Tim",
-                    "from": {"emailAddress": {"address": "tim@firesideit.ca"}},
+                    "from": {"emailAddress": {"address": "user@example.com"}},
                     "sentDateTime": "2026-08-10T13:00:00Z",
                     "internetMessageId": "<outbound@test.com>",
                     "body": {"content": "<p>Hi</p>"},

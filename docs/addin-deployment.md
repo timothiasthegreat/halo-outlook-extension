@@ -10,7 +10,7 @@ Edit `add-in/src/config.ts` with your Halo instance's values:
 
 ```ts
 const config: AddinConfig = {
-  haloUrl: "https://service.firesideit.ca",   // Your Halo URL
+  haloUrl: "https://your-instance.halopsa.com",   // Your Halo URL
   haloClientId: "",                             // OAuth2 client ID
   actions: {
     emailReceived: 0,                           // Verify with setup_check.py

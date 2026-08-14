@@ -135,7 +135,7 @@ Expected output:
 
 ```
 ✓ config.yaml loaded and valid
-✓ HaloPSA reachable → https://service.firesideit.ca
+✓ HaloPSA reachable → https://your-instance.halopsa.com
 ✓ OAuth2 token acquired (scope: all)
 ✓ Custom field 285 (CFticketconvid) found
 ✓ Action: email_received → 0 (Email Update)
