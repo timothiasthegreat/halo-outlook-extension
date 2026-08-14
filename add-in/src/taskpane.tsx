@@ -15,6 +15,7 @@ import * as ReactDOM from "react-dom";
 import Banner from "./banner";
 import * as halo from "./halo";
 import { loadConfig, getConfig } from "./config";
+import { Setup } from "./setup";
 
 // ── state ──────────────────────────────────────────────────────
 
@@ -31,7 +32,7 @@ interface TaskpaneState {
   senderEmail: string;
 
   // UI state
-  mode: "untracked" | "tracked" | "link" | "login";
+  mode: "untracked" | "tracked" | "link" | "login" | "setup";
   ticketTypeId: number;
   searchQuery: string;
   searchResults: halo.HaloTicket[];
@@ -476,16 +477,29 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
         )}
 
         {/* ── Login prompt ── */}
-        {mode === "login" && (
-          <div style={{ textAlign: "center", padding: "20px" }}>
-            <div style={{ marginBottom: "12px", color: "#666" }}>
-              Connect to HaloPSA to start tracking conversations.
-            </div>
-            <button style={buttonStyle} onClick={this.handleLogin}>
-              Sign in to Halo
-            </button>
-          </div>
-        )}
+                {mode === "login" && (
+                  <div style={{ textAlign: "center", padding: "20px" }}>
+                    <div style={{ marginBottom: "12px", color: "#666" }}>
+                      Connect to HaloPSA to start tracking conversations.
+                    </div>
+                    <button style={buttonStyle} onClick={this.handleLogin}>
+                      Sign in to Halo
+                    </button>
+                  </div>
+                )}
+
+                {/* ── Setup prompt ── */}
+                {mode === "setup" && (
+                  <Setup
+                    email={this.state.senderEmail}
+                    refreshToken=""
+                    onRegistered={() => {
+                      localStorage.setItem("halo_watcher_registered", "true");
+                      this.setState({ mode: "untracked" });
+                    }}
+                    onSkip={() => this.setState({ mode: "untracked" })}
+                  />
+                )}
       </div>
     );
   }
