@@ -6,26 +6,26 @@ halo:
   # Your HaloPSA instance URL (e.g. https://your-instance.halopsa.com)
   instance_url: https://your-instance.halopsa.com
 
-  # OAuth2 client credentials (for unattended watcher operation)
+  # OAuth2 client ID (for PKCE auth code flow — no client secret needed)
   # From Configuration → Integrations → Halo API → OAuth Application
   client_id: ""
+
+  # OAuth2 client secret — NOT required for PKCE auth (the add-in handles auth)
+  # Leave empty unless you're using client credentials (deprecated path)
   client_secret: ""
 
   # Ticket action IDs — discover these from your Halo instance
-  # 0  = Email Update (inbound: customer → agent)
-  # 16 = Email User (outbound: agent → customer)
-  # 7  = Recorded Note (internal)
+  # Use scripts/setup_check.py --discover-actions to find yours
   actions:
     email_received: 0
     email_sent: 16
     internal_note: 7
 
   # Custom field ID that stores the conversationId on tickets
-  # Discover yours with: python scripts/setup_check.py --list-custom-fields
   custom_field_conv_id: 285
 
   # Default ticket type for new tickets created from conversations
-  default_ticket_type_id: 1  # Incident (configure per your Halo instance)
+  default_ticket_type_id: 1
 
 # Microsoft Graph connection (for email monitoring)
 graph:
@@ -35,10 +35,10 @@ graph:
   # App registration client ID (requires Mail.Read application permission)
   client_id: ""
 
-  # Client secret for unattended operation
+  # Client secret for unattended Graph API access
   client_secret: ""
 
-  # Mailbox to watch (e.g. you@yourcompany.com)
+  # Default mailbox — per-user mailboxes are registered via the add-in
   user_email: ""
 
 # Watcher behavior

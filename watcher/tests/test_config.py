@@ -92,9 +92,9 @@ class TestGraphConfig:
         )
         assert config.user_email == "u@e.com"
 
-    def test_missing_user_email_rejected(self):
-        with pytest.raises(ValueError):
-            GraphConfig.model_validate(
+    def test_empty_user_email_accepted(self):
+            """user_email is optional — per-user mailboxes are registered via add-in."""
+            config = GraphConfig.model_validate(
                 {
                     "tenant_id": "t",
                     "client_id": "c",
@@ -102,6 +102,7 @@ class TestGraphConfig:
                     "user_email": "",
                 }
             )
+            assert config.user_email == ""
 
 
 class TestWatcherConfig:

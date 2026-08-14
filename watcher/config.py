@@ -13,7 +13,7 @@ class HaloConfig(BaseModel):
 
     instance_url: str = Field(description="HaloPSA instance URL, e.g. https://your-instance.halopsa.com")
     client_id: str = Field(min_length=1, description="OAuth2 client ID")
-    client_secret: str = Field(min_length=1, description="OAuth2 client secret")
+    client_secret: str = Field(default="", description="OAuth2 client secret (not needed for PKCE)")
     actions: HaloActionsConfig = Field(default_factory=lambda: HaloActionsConfig())
     custom_field_conv_id: int = Field(default=285, description="Custom field ID for conversationId")
     default_ticket_type_id: int = Field(default=1, description="Default ticket type for new tickets")
@@ -48,7 +48,7 @@ class GraphConfig(BaseModel):
     tenant_id: str = Field(min_length=1, description="Azure AD tenant ID")
     client_id: str = Field(min_length=1, description="App registration client ID")
     client_secret: str = Field(min_length=1, description="Client secret")
-    user_email: str = Field(min_length=1, description="Mailbox to watch")
+    user_email: str = Field(default="", description="Default mailbox to watch (per-user queries override this)")
 
 
 class WatcherConfig(BaseModel):
