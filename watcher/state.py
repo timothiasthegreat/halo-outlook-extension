@@ -17,13 +17,20 @@ Schema:
     internet_message_id TEXT NOT NULL
     synced_at TEXT NOT NULL
     UNIQUE(conversation_id, internet_message_id)
+
+  watched_mailboxes:
+    email TEXT PRIMARY KEY
+    refresh_token_enc TEXT NOT NULL
+    token_status TEXT NOT NULL DEFAULT 'active'
+    registered_at TEXT NOT NULL
+    last_token_refresh_at TEXT
 """
 
 from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 import structlog
@@ -45,6 +52,14 @@ CREATE TABLE IF NOT EXISTS synced_messages (
     internet_message_id TEXT NOT NULL,
     synced_at TEXT NOT NULL,
     UNIQUE(conversation_id, internet_message_id)
+);
+
+CREATE TABLE IF NOT EXISTS watched_mailboxes (
+    email TEXT PRIMARY KEY,
+    refresh_token_enc TEXT NOT NULL,
+    token_status TEXT NOT NULL DEFAULT 'active',
+    registered_at TEXT NOT NULL,
+    last_token_refresh_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_synced_conv
@@ -226,6 +241,89 @@ class StateStore:
         rows = await cursor.fetchall()
         return [row["conversation_id"] for row in rows]
 
+    # ── watched mailboxes ──────────────────────────────────────
+
+    async def register_mailbox(self, email: str, refresh_token_enc: str) -> None:
+        """Register or update a watched mailbox with its encrypted refresh token.
+
+        Upsert: if the email already exists, updates the token and resets status
+        to active. Otherwise inserts a new row.
+        """
+        assert self._conn is not None
+        now = _utcnow()
+        await self._conn.execute(
+            """INSERT INTO watched_mailboxes
+               (email, refresh_token_enc, token_status, registered_at, last_token_refresh_at)
+               VALUES (?, ?, 'active', ?, ?)
+               ON CONFLICT(email) DO UPDATE SET
+                   refresh_token_enc = excluded.refresh_token_enc,
+                   token_status = 'active',
+                   last_token_refresh_at = excluded.last_token_refresh_at""",
+            (email, refresh_token_enc, now, now),
+        )
+        await self._conn.commit()
+        logger.info("mailbox_registered", email=email)
+
+    async def get_watched_mailboxes(self) -> list[dict[str, object]]:
+        """Get all active (non-expired) watched mailboxes with their tokens."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            """SELECT email, refresh_token_enc, token_status,
+                      registered_at, last_token_refresh_at
+               FROM watched_mailboxes
+               WHERE token_status = 'active'
+               ORDER BY email"""
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_mailbox(self, email: str) -> dict[str, object] | None:
+        """Get a single mailbox row by email, or None."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            """SELECT email, refresh_token_enc, token_status,
+                      registered_at, last_token_refresh_at
+               FROM watched_mailboxes
+               WHERE email = ?""",
+            (email,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def update_token(self, email: str, refresh_token_enc: str) -> None:
+        """Update the refresh token for a mailbox and reset status to active."""
+        assert self._conn is not None
+        await self._conn.execute(
+            """UPDATE watched_mailboxes
+               SET refresh_token_enc = ?,
+                   token_status = 'active',
+                   last_token_refresh_at = ?
+               WHERE email = ?""",
+            (refresh_token_enc, _utcnow(), email),
+        )
+        await self._conn.commit()
+        logger.info("mailbox_token_updated", email=email)
+
+    async def mark_token_expired(self, email: str) -> None:
+        """Mark a mailbox's token as expired (pauses syncing for this user)."""
+        assert self._conn is not None
+        await self._conn.execute(
+            "UPDATE watched_mailboxes SET token_status = 'expired' WHERE email = ?",
+            (email,),
+        )
+        await self._conn.commit()
+        logger.info("mailbox_token_expired", email=email)
+
+    async def unregister_mailbox(self, email: str) -> None:
+        """Remove a mailbox entirely from the watch list."""
+        assert self._conn is not None
+        await self._conn.execute(
+            "DELETE FROM watched_mailboxes WHERE email = ?",
+            (email,),
+        )
+        await self._conn.commit()
+        logger.info("mailbox_unregistered", email=email)
+
 
 def _utcnow() -> str:
     """ISO 8601 UTC timestamp string."""
@@ -234,7 +332,5 @@ def _utcnow() -> str:
 
 def _utcnow_days_ago(days: int) -> str:
     """ISO 8601 UTC timestamp for N days ago."""
-    from datetime import timedelta
-
     dt = datetime.now(timezone.utc) - timedelta(days=days)
     return dt.isoformat()
