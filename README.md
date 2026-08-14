@@ -2,49 +2,42 @@
 
 > Create and track HaloPSA tickets directly from Outlook. Click a button to link any email conversation to a ticket — every future reply automatically journals, even when Outlook isn't running.
 
-**One click in Outlook → ticket exists in Halo.** Customer replies journal as ticket updates. Your replies journal as agent actions. The customer only ever sees your personal email address — no shared mailbox jarring.
+**One container, one deploy.** The add-in is served from the same Docker container that runs the watcher. Register your mailbox by clicking one button in Outlook — no config editing, no second OAuth app, no build-time values to fill in.
 
 ---
 
 ## Prerequisites
 
-You need all of the following before you can deploy:
-
 | What | Required for | Must have |
 |---|---|---|
-| **HaloPSA instance** with REST API | Both components | Admin access to Configuration → Integrations → Halo API. Must be reachable over HTTPS. Self-hosted or Halo‑hosted both work. |
-| **OAuth2 client credentials** in Halo | Watcher service | Client ID + client secret from an OAuth Application (grant type: Client Credentials, scope: `all`). API keys **cannot** post ticket actions — OAuth is required. |
-| **Custom field** on Halo tickets | Both components | A text-type custom field (ticket‑scoped) to store Exchange `conversationId`. Must be added to every ticket type you want to track. System name must be alphanumeric only (e.g. `ticketconvid`). |
-| **Ticket Action IDs** | Both components | Numeric IDs for "Email Received" (inbound) and "Email Sent" (outbound). Usually `0` and `16` — verify with `scripts/setup_check.py --discover-actions`. |
-| **Azure AD app registration** | Watcher service | Application permission `Mail.Read` granted with admin consent. Provides the `graph.tenant_id`, `graph.client_id`, and `graph.client_secret` for `config.yaml`. |
-| **Exchange Online mailbox** | Watcher service | A licensed Exchange Online mailbox whose email address goes in `graph.user_email`. This is the address the user reads in Outlook — the one customers actually send to. |
-| **Python 3.11+** | Watcher service | On the machine that runs the watcher (Docker, Windows, or Linux). |
-| **Always‑on environment** | Watcher service | Docker, Windows Service, Linux systemd, or cron. The watcher must run continuously to capture messages when Outlook is closed. |
-| **Microsoft 365 tenant** | Outlook add-in | Your org's tenant. The add-in is uploaded to Admin Center → Integrated Apps. |
-| **Node.js 18+** | Outlook add-in | For building the add-in's static assets (one‑time: `npm install && npm run build`). Not needed at runtime. |
-| **Static web hosting** | Outlook add-in | Any HTTPS web server to host the built `dist/` folder. GitHub Pages, Azure Static Web Apps, S3, or self‑hosted all work. |
+| **HaloPSA instance** | Both | Admin access to Configuration → Integrations → Halo API. HTTPS required. |
+| **OAuth2 app** (PKCE auth code flow) | Both | A **single** OAuth Application in Halo. Client ID only — no client secret needed. Use the same app for both the add-in and watcher. |
+| **Custom field** on tickets | Both | Text-type ticket-scoped custom field to store conversationId. System name alphanumeric only (e.g. `ticketconvid`). Add to every ticket type you track. |
+| **Ticket Action IDs** | Both | Numeric IDs for "Email Received" and "Email Sent". Run `scripts/setup_check.py --discover-actions` to find yours. |
+| **Azure AD app registration** | Watcher | Application permission `Mail.Read` with admin consent. |
+| **Exchange Online mailboxes** | Watcher | Licensed Exchange Online mailboxes. Users self-register via the add-in — no per-user config. |
+| **Always-on environment** | Both | Docker (recommended), or bare-metal Python 3.11 + Node.js 18. |
 
-### Before you start — run the pre‑flight check
+### Before you start
 
 ```bash
-cp config.example.yaml config.yaml   # fill in your values
-python scripts/setup_check.py        # validates everything
+cp config.example.yaml config.yaml   # fill in halo.client_id + graph.*
+python scripts/setup_check.py        # validates connectivity
 ```
-
-If it passes, you're ready. If not, the output tells you exactly what's missing.
 
 ---
 
 ## How It Works
 
-Two components, one repository:
+**One container** serves everything:
 
 | Component | Tech | What it does |
 |---|---|---|
-| **Outlook Add-in** | TypeScript + React (Office.js) | "Create Ticket" and "Link to Ticket" buttons in the Outlook reading pane. Shows ticket status banner on tracked emails. |
-| **Watcher Service** | Python 3.11+ (async) | Background daemon that polls Microsoft Graph for new messages in tracked conversations and journals them to Halo. Runs even when Outlook is closed. |
+| **Express Server** | Node.js (in container) | Serves the add-in's static files + `GET /api/config` + `POST /api/register` |
+| **Outlook Add-in** | TypeScript + React (Office.js) | "Create Ticket" / "Link to Ticket" buttons. Fetches config at runtime — no rebuild for changes. |
+| **Watcher Service** | Python 3.11 (in container) | Polls Graph for new messages in watched conversations, journals to Halo. Uses per-user PKCE tokens for correct action attribution. |
 
-The magic: Exchange `conversationId` stored in a Halo custom field. When a conversation is linked, the watcher sees every new message in that thread and pushes it to the correct ticket with the correct action type (inbound vs outbound).
+**Multi-user by design:** Each user authorizes once via the add-in's PKCE flow. Their refresh token is stored encrypted in `state.db`. The watcher uses that user's token when journaling messages from their mailbox — actions are correctly attributed to the human who owns the conversation.
 
 ---
 
@@ -56,40 +49,31 @@ The magic: Exchange `conversationId` stored in a Halo custom field. When a conve
 git clone https://github.com/timothiasthegreat/halo-outlook-extension.git
 cd halo-outlook-extension
 
-# Copy and edit the config
+# Copy and edit the config (halo.client_id + graph.* are the only required fields)
 cp config.example.yaml config.yaml
-# Fill in your Halo URL, credentials, Graph tenant info, and action IDs
 ```
 
-### 2. Run the watcher
+### 2. Build and run
 
 ```bash
-# Docker (recommended — one command)
-docker compose up -d
+# Build the add-in
+cd add-in && npm install && npm run build && cd ..
 
-# Or bare-metal
-cd watcher && pip install -e .
-python -m watcher.watcher --config ../config.yaml
+# Start the combined container
+docker compose up -d
 ```
 
-Verify it's running: `curl http://localhost:8888/health`
+Verify: `curl http://localhost:3000/health` and `curl http://localhost:3000/api/config`
 
 ### 3. Deploy the add-in
 
 ```bash
-cd add-in
-
-# Edit src/config.ts with your Halo URL and action IDs
-# Build
-npm install && npm run build
-
-# Host the dist/ folder (GitHub Pages, Azure, S3, or any web server)
-# Full guide: docs/addin-deployment.md
-# Update manifest.xml <SourceLocation> to your hosted URL
+# The add-in is already served from the container — just upload the manifest.
+# Update manifest.xml <SourceLocation> to your hosted URL (https://your-server:3000)
 # Upload manifest.xml to Microsoft 365 Admin Center → Integrated Apps
 ```
 
-The add-in appears in Outlook within minutes.
+The add-in appears in Outlook within minutes. The first time a user opens it, they'll be prompted to register their mailbox — one click, done.
 
 ### 4. Start tracking
 
@@ -100,53 +84,71 @@ The add-in appears in Outlook within minutes.
 
 ---
 
+## Environment Variables
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `FERNET_KEY` | Production only | Auto-generated in Docker | Encrypts refresh tokens at rest. Docker entrypoint generates one on first run and persists it to `/app/state/fernet.key`. |
+| `FERNET_KEY_FILE` | No | `/app/state/fernet.key` | Path to persisted Fernet key. |
+| `EXPRESS_PORT` | No | `3000` | Express listen port. |
+| `HEALTH_PORT` | No | `8888` | Watcher health-check port. |
+| `PYTHONUNBUFFERED` | No | — | Set to `1` for unbuffered logs. |
+
+---
+
 ## Documentation
 
 | Doc | What's covered |
 |---|---|
-| [Configuration](docs/configuration.md) | Every `config.yaml` option explained, with defaults |
-| [Halo Setup](docs/halo-setup.md) | Creating the custom field, discovering action IDs |
+| [Configuration](docs/configuration.md) | Every `config.yaml` option |
+| [Halo Setup](docs/halo-setup.md) | Creating the custom field, discovering action IDs, PKCE OAuth app |
 | [Azure Setup](docs/azure-setup.md) | App registration, permissions, admin consent |
-| [Add-in Deployment](docs/addin-deployment.md) | Building, hosting, and uploading the Outlook add-in |
-| [Watcher Deployment](docs/deployment.md) | Docker, Windows Service, Linux systemd, cron |
-| [Troubleshooting](docs/troubleshooting.md) | Common errors, log inspection, health checks |
+| [Add-in Deployment](docs/addin-deployment.md) | Building, hosting, uploading the manifest |
+| [Watcher Deployment](docs/deployment.md) | Docker, bare-metal, cron |
+| [Troubleshooting](docs/troubleshooting.md) | Common errors, logs, health checks |
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────────────┐     ┌─────────────┐
-│   Outlook   │────▶│  Outlook Add-in  │────▶│  HaloPSA    │
-│  (user UI)  │     │  (Office.js)     │     │  REST API   │
-└─────────────┘     └──────────────────┘     └─────────────┘
-                                                      ▲
-┌─────────────┐     ┌──────────────────┐              │
-│  Exchange   │────▶│  Watcher Service │──────────────┘
-│  (Graph API)│     │  (Python daemon) │
-└─────────────┘     └──────────────────┘
-                           │
-                     ┌─────▼──────┐
-                     │  state.db  │
-                     │  (SQLite)  │
-                     └────────────┘
+┌──────────┐     ┌──────────────────────┐     ┌──────────┐
+│  Outlook  │────▶│   Express Server     │────▶│ HaloPSA  │
+│ (user UI) │     │ (static + API)       │     │ REST API │
+└──────────┘     │                      │     └──────────┘
+                 │ /api/config          │           ▲
+┌──────────┐     │ /api/register        │           │
+│ Exchange  │────▶│ /health              │───────────┘
+│ (Graph)   │     │                      │
+└──────────┘     │ Watcher Service      │
+                 │ (Python daemon)      │
+                 │ TokenManager         │
+                 │ (per-user PKCE)      │
+                 └───────┬──────────────┘
+                         │
+                  ┌──────▼──────┐
+                  │  state.db   │
+                  │  (SQLite)   │
+                  │  WAL mode   │
+                  └─────────────┘
 ```
 
-1. **User clicks "Create Ticket" in Outlook** → Add-in calls Halo API, creates ticket with `conversationId` in custom field
-2. **Watcher polls Graph API** → Finds new messages in watched conversations
-3. **Dedup & direction** → Skips already-synced messages, determines inbound vs outbound
-4. **Journals to Halo** → Posts ticket action with correct `outcome_id`; downloads and attaches file attachments automatically
-5. **Staleness detection** → Conversations idle for longer than `watcher.stale_conversation_days` are automatically un-watched
+1. **User opens add-in** → Fetches config from `/api/config`, presents "Create Ticket" or "Link to Ticket"
+2. **First-time setup** → User clicks "Enable Watching", PKCE refresh token is encrypted and stored in `state.db` via `/api/register`
+3. **Watcher polls Graph** → Loads watched mailboxes from `state.db`, fetches new messages per-user mailbox
+4. **Dedup & direction** → Skips already-synced messages, determines inbound vs outbound per user's email
+5. **Journals to Halo** → Posts action using that user's PKCE token — correctly attributed to the human
+6. **Staleness detection** → Idle conversations auto-marked stale after `watcher.stale_conversation_days`
 
 ---
 
 ## Community
 
-This project is MIT-licensed and intended for the HaloPSA community. Deploy it on your own infrastructure — no dependency on the original author's systems.
+MIT-licensed. Deploy on your own infrastructure — no dependency on the original author's systems.
 
 - **Issues & PRs:** [GitHub](https://github.com/timothiasthegreat/halo-outlook-extension)
 - **Discussion:** Open an issue for questions, feature requests, or deployment help
-- **Contributing:** PRs welcome — please run `python -m pytest tests/` before submitting
+- **Contributing:** PRs welcome — run `python -m pytest watcher/tests/` and `cd server && node --test tests/` before submitting
 
 ---
 
