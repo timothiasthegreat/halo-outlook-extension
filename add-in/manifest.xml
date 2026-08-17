@@ -75,69 +75,84 @@
 
   <DisableEntityHighlighting>false</DisableEntityHighlighting>
 
-  <!-- Version overrides: adds the message-read taskpane command surface -->
+  <!-- Version overrides: message-read command + Smart Alerts send interception -->
   <VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides" xsi:type="VersionOverridesV1_0">
-    <Requirements>
-      <bt:Sets DefaultMinVersion="1.8">
-        <bt:Set Name="Mailbox" />
-      </bt:Sets>
-    </Requirements>
+    <VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides/1.1" xsi:type="VersionOverridesV1_1">
+      <Requirements>
+        <bt:Sets DefaultMinVersion="1.12">
+          <bt:Set Name="Mailbox" />
+        </bt:Sets>
+      </Requirements>
 
-    <Hosts>
-      <Host xsi:type="MailHost">
-        <DesktopFormFactor>
-          <!-- Task pane: shown in reading pane -->
-          <ExtensionPoint xsi:type="MessageReadCommandSurface">
-            <OfficeTab id="TabDefault">
-              <Group id="msgReadGroup">
-                <Label resid="groupLabel" />
-                <Control xsi:type="Button" id="openTaskpane">
-                  <Label resid="paneReadButtonLabel" />
-                  <Supertip>
-                    <Title resid="paneReadButtonTitle" />
-                    <Description resid="paneReadButtonDescription" />
-                  </Supertip>
-                  <Icon>
-                    <bt:Image size="16" resid="icon16" />
-                    <bt:Image size="32" resid="icon32" />
-                    <bt:Image size="80" resid="icon80" />
-                  </Icon>
-                  <Action xsi:type="ShowTaskpane">
-                    <SourceLocation resid="taskpaneUrl" />
-                  </Action>
-                </Control>
-              </Group>
-            </OfficeTab>
-          </ExtensionPoint>
+      <Hosts>
+        <Host xsi:type="MailHost">
+          <Runtimes>
+            <Runtime resid="WebViewRuntime.Url">
+              <Override type="javascript" resid="JSRuntime.Url" />
+            </Runtime>
+          </Runtimes>
 
-        </DesktopFormFactor>
+          <DesktopFormFactor>
+            <!-- Task pane: shown in reading pane -->
+            <ExtensionPoint xsi:type="MessageReadCommandSurface">
+              <OfficeTab id="TabDefault">
+                <Group id="msgReadGroup">
+                  <Label resid="groupLabel" />
+                  <Control xsi:type="Button" id="openTaskpane">
+                    <Label resid="paneReadButtonLabel" />
+                    <Supertip>
+                      <Title resid="paneReadButtonTitle" />
+                      <Description resid="paneReadButtonDescription" />
+                    </Supertip>
+                    <Icon>
+                      <bt:Image size="16" resid="icon16" />
+                      <bt:Image size="32" resid="icon32" />
+                      <bt:Image size="80" resid="icon80" />
+                    </Icon>
+                    <Action xsi:type="ShowTaskpane">
+                      <SourceLocation resid="taskpaneUrl" />
+                      <SupportsPinning>true</SupportsPinning>
+                    </Action>
+                  </Control>
+                </Group>
+              </OfficeTab>
+            </ExtensionPoint>
 
-      </Host>
-    </Hosts>
+            <ExtensionPoint xsi:type="LaunchEvent">
+              <LaunchEvents>
+                <LaunchEvent Type="OnMessageSend" FunctionName="onMessageSendHandler" SendMode="SoftBlock" />
+              </LaunchEvents>
+              <SourceLocation resid="WebViewRuntime.Url" />
+            </ExtensionPoint>
+          </DesktopFormFactor>
+        </Host>
+      </Hosts>
 
-    <!-- Resource strings (resid -> values) -->
-    <Resources>
-      <bt:Images>
-        <bt:Image id="icon16" DefaultValue="@source_location@/assets/icon-16.png" />
-        <bt:Image id="icon25" DefaultValue="@source_location@/assets/icon-25.png" />
-        <bt:Image id="icon32" DefaultValue="@source_location@/assets/icon-32.png" />
-        <bt:Image id="icon48" DefaultValue="@source_location@/assets/icon-48.png" />
-        <bt:Image id="icon64" DefaultValue="@source_location@/assets/icon-64.png" />
-        <bt:Image id="icon80" DefaultValue="@source_location@/assets/icon-80.png" />
-        <bt:Image id="icon128" DefaultValue="@source_location@/assets/icon-128.png" />
-      </bt:Images>
-      <bt:Urls>
-        <bt:Url id="taskpaneUrl" DefaultValue="@source_location@/taskpane.html" />
-      </bt:Urls>
-      <bt:ShortStrings>
-        <bt:String id="groupLabel" DefaultValue="Halo Ticket Bridge" />
-        <bt:String id="paneReadButtonLabel" DefaultValue="Link to Halo" />
-        <bt:String id="paneReadButtonTitle" DefaultValue="Halo Ticket Bridge" />
-      </bt:ShortStrings>
-      <bt:LongStrings>
-        <bt:String id="paneReadButtonDescription" DefaultValue="Create or link a HaloPSA ticket from this email conversation. Future replies automatically journal to the ticket." />
-      </bt:LongStrings>
-    </Resources>
-
+      <!-- Resource strings (resid -> values) -->
+      <Resources>
+        <bt:Images>
+          <bt:Image id="icon16" DefaultValue="@source_location@/assets/icon-16.png" />
+          <bt:Image id="icon25" DefaultValue="@source_location@/assets/icon-25.png" />
+          <bt:Image id="icon32" DefaultValue="@source_location@/assets/icon-32.png" />
+          <bt:Image id="icon48" DefaultValue="@source_location@/assets/icon-48.png" />
+          <bt:Image id="icon64" DefaultValue="@source_location@/assets/icon-64.png" />
+          <bt:Image id="icon80" DefaultValue="@source_location@/assets/icon-80.png" />
+          <bt:Image id="icon128" DefaultValue="@source_location@/assets/icon-128.png" />
+        </bt:Images>
+        <bt:Urls>
+          <bt:Url id="taskpaneUrl" DefaultValue="@source_location@/taskpane.html" />
+          <bt:Url id="WebViewRuntime.Url" DefaultValue="@source_location@/commands.html" />
+          <bt:Url id="JSRuntime.Url" DefaultValue="@source_location@/launchevent.js" />
+        </bt:Urls>
+        <bt:ShortStrings>
+          <bt:String id="groupLabel" DefaultValue="Halo Ticket Bridge" />
+          <bt:String id="paneReadButtonLabel" DefaultValue="Link to Halo" />
+          <bt:String id="paneReadButtonTitle" DefaultValue="Halo Ticket Bridge" />
+        </bt:ShortStrings>
+        <bt:LongStrings>
+          <bt:String id="paneReadButtonDescription" DefaultValue="Create or link a HaloPSA ticket from this email conversation. Future replies automatically journal to the ticket." />
+        </bt:LongStrings>
+      </Resources>
+    </VersionOverrides>
   </VersionOverrides>
 </OfficeApp>
