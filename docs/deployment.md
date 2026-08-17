@@ -1,63 +1,120 @@
 # Deploying the Halo Outlook Extension
 
-The watcher and static server run as a **single Docker container** by default.
-Bare-metal (Python + Node.js) is also supported.
+The add-in server and watcher ship as a single prebuilt Docker image:
+**`docker.io/timothiasthegreat/halo-outlook-extension:latest`**.
 
-> **Prerequisites:** `config.yaml` filled in and `setup_check.py` passing.
+You provide two files tailored to your environment — `config.yaml` and `manifest.xml` — and deploy. The image never needs a local build.
 
 ---
 
-## Deployment Options
+## What you need
 
-| Method | Best for | Complexity |
+| Artifact | You provide | Details |
 |---|---|---|
-| [Docker](#1-docker-recommended) | One command, reproducible, always-on. | Low |
-| [Windows Service](#2-windows-service) | Windows MSPs with existing Windows Server. | Medium |
-| [Linux systemd](#3-linux-systemd) | Linux servers with systemd. | Medium |
-| [Cron](#4-cron-lightweight) | Lightweight, no daemon. | Low |
+| `config.yaml` | ✅ One per environment | HaloPSA and Graph credentials. Template: `config.example.yaml`. |
+| `manifest.xml` | ✅ One per environment | Add-in manifest with your domain's URLs. Template: `add-in/manifest.xml`. |
+| Docker image | ❌ Prebuilt | `docker.io/timothiasthegreat/halo-outlook-extension:latest` |
+| Reverse proxy with TLS | ✅ One per environment | Nginx, Caddy, Traefik — Outlook requires HTTPS. |
 
 ---
 
-## 1. Docker (Recommended)
+## Step 1: Create `config.yaml`
 
-One container runs both Express (static + API on port 3000) and the watcher daemon (health on port 8888, internal only).
+Copy the template and fill in your values:
 
 ```bash
-# 1. Build the add-in (one-time)
-cd add-in && npm install && npm run build && cd ..
-
-# 2. Copy and edit config (only halo.client_id + graph.* are required)
 cp config.example.yaml config.yaml
-
-# 3. Start
-docker compose up -d
-
-# 4. Verify
-curl http://localhost:3000/health        # Express
-curl http://localhost:3000/api/config    # Tenant config
 ```
 
-### Reverse Proxy (required for production)
-
-The container serves HTTP only. **You must put a TLS-terminating reverse proxy in front for any deployment that is not purely local development.** Outlook enforces HTTPS for all add-in assets, and the bearer tokens flowing through `/api/register` are sensitive.
-
-**Recommended: Caddy** (automatic Let's Encrypt, 10 lines of config).
-
-Add to `docker-compose.yml`:
+**Required fields:**
 
 ```yaml
+halo:
+  instance_url: https://your-instance.halopsa.com
+  client_id: "your-pkce-client-id"   # OAuth app from HaloPSA (PKCE, scope=all)
+
+graph:
+  tenant_id: "a1b2c3d4-..."         # Azure AD tenant ID
+  client_id: "graph-app-client-id"   # App registration with Mail.Read
+  client_secret: "graph-secret"      # Client secret
+```
+
+Everything else has sensible defaults. See [Configuration Reference](configuration.md) for all options.
+
+---
+
+## Step 2: Customize `manifest.xml`
+
+The manifest in the repo (`add-in/manifest.xml`) contains `@source_location@` placeholders. **You must replace these** with your domain before deploying the add-in to Microsoft 365.
+
+Find-and-replace every `@source_location@` with your server's URL:
+
+```
+https://your-domain.com
+```
+
+The result should look like:
+
+```xml
+<IconUrl DefaultValue="https://your-domain.com/assets/icon-64.png" />
+<SourceLocation DefaultValue="https://your-domain.com/taskpane.html" />
+```
+
+**After customizing, validate:**
+
+```bash
+npx office-addin-manifest validate manifest.xml
+```
+
+See the [Add-in Deployment Guide](addin-deployment.md) for the full upload process.
+
+---
+
+## Step 3: Deploy the container
+
+The image has two volume mount points:
+
+| Container path | Purpose | Back up? |
+|---|---|---|
+| `/app/config.yaml` | Your configuration file (read-only) | No — it's in version control |
+| `/app/state` | Persistent `state.db` + `fernet.key` | **Yes** — contains encrypted user tokens |
+
+### Docker Compose (recommended)
+
+```yaml
+version: "3.8"
+
+services:
+  halo-outlook:
+    image: docker.io/timothiasthegreat/halo-outlook-extension:latest
+    container_name: halo-outlook-extension
+    restart: unless-stopped
+    expose:
+      - "3000"   # Internal — the reverse proxy routes to this
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - watcher_state:/app/state
+    environment:
+      - PYTHONUNBUFFERED=1
+      - FERNET_KEY_FILE=/app/state/fernet.key
+
+  # TLS-terminating reverse proxy (required — Outlook enforces HTTPS)
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
     ports:
       - "443:443"
-      - "80:80"    # for HTTP→HTTPS redirect + Let's Encrypt
+      - "80:80"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
+
+volumes:
+  watcher_state:
+  caddy_data:
 ```
 
-Create `Caddyfile`:
+**Caddyfile:**
 
 ```
 your-domain.com {
@@ -65,154 +122,82 @@ your-domain.com {
 }
 ```
 
-Then remove the public port mapping from the `halo-outlook` service:
+### Portainer stack
 
-```yaml
-  halo-outlook:
-    # ports:          # ← REMOVE the public mapping
-    #   - "3000:3000"
-    expose:
-      - "3000"        # ← internal-only, reachable by Caddy
+Same compose file. In Portainer:
+
+1. **Stacks → Add stack** → paste the compose above
+2. Set `config.yaml` and `Caddyfile` paths to absolute host paths (e.g. `/opt/halo-outlook/config.yaml`)
+3. Deploy
+
+### Nginx (alternative)
+
+If you already have an nginx reverse proxy:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name your-domain.com;
+
+    ssl_certificate     /etc/ssl/certs/your-domain.crt;
+    ssl_certificate_key /etc/ssl/private/your-domain.key;
+
+    location / {
+        proxy_pass http://halo-outlook:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
 ```
 
-**Nginx** also works. Either way, the reverse proxy:
+---
 
-- Terminates TLS (Outlook requires HTTPS for add-in assets)
-- Protects bearer tokens in transit (plain HTTP leaks credentials)
-- Enables rate limiting and access logging at the edge
-
-For local development with `webpack serve`, TLS is handled by webpack-dev-server — no reverse proxy needed.
-
-### Volumes
-
-| Path | Purpose |
-|---|---|
-| `./config.yaml:/app/config.yaml:ro` | Configuration (read-only) |
-| `watcher_state:/app/state` | Persistent `state.db` + `fernet.key` |
-
-### Environment variables in Docker
-
-The Docker entrypoint auto-generates `FERNET_KEY` on first run and persists it to `/app/state/fernet.key`. No manual env setup needed. See [Configuration](configuration.md) for all options.
-
-### Logs
+## Step 4: Verify
 
 ```bash
-docker compose logs -f
-docker compose logs --tail=50
+curl https://your-domain.com/health        # {"status":"ok"}
+curl https://your-domain.com/api/config    # returns your config
+curl https://your-domain.com/taskpane.html # returns HTML
 ```
 
-### Updating
+All three should return 200. If `/api/config` fails, your `config.yaml` isn't mounted or has a syntax error.
+
+---
+
+## Step 5: Upload the add-in to Microsoft 365
+
+1. Go to **Microsoft 365 Admin Center → Settings → Integrated Apps**
+2. **Upload custom apps** → select your customized `manifest.xml`
+3. Assign to users
+4. Wait 5–15 minutes for propagation
+
+For local testing, you can sideload instead: [Add-in Deployment → Sideloading](addin-deployment.md).
+
+---
+
+## Updating
+
+Pull the latest image and restart:
 
 ```bash
-docker compose down
-docker compose build --pull
+docker compose pull halo-outlook
 docker compose up -d
 ```
 
----
+Or in Portainer: **Re-pull image** → **Update the stack**.
 
-## 2. Windows Service
-
-Use **NSSM** (Non-Sucking Service Manager) to wrap both processes.
-
-```powershell
-# Install
-cd C:\halo-outlook-extension\watcher
-pip install -e .
-cd ..\server
-npm ci --production
-cd ..
-
-# Create service directory
-mkdir C:\halo-outlook-watcher
-copy config.yaml C:\halo-outlook-watcher\
-
-# Install watcher service
-nssm install HaloWatcher python.exe
-nssm set HaloWatcher AppDirectory "C:\halo-outlook-watcher"
-nssm set HaloWatcher AppParameters "-m watcher.watcher --config config.yaml"
-nssm set HaloWatcher Start SERVICE_AUTO_START
-
-# Start Express server (separate service or task)
-nssm install HaloServer node.exe
-nssm set HaloServer AppDirectory "C:\halo-outlook-extension\server"
-nssm set HaloServer AppParameters "server.js --config C:\halo-outlook-watcher\config.yaml"
-nssm set HaloServer Start SERVICE_AUTO_START
-```
-
-Set `FERNET_KEY` as a system environment variable or in the service config.
+The `watcher_state` volume persists across updates — user registrations survive image changes.
 
 ---
 
-## 3. Linux systemd
+## Backups
 
-Two service units: one for the watcher, one for Express. Or run both from one service with `&`.
+Only one directory needs backing up: the `watcher_state` volume. It contains:
 
-### Install
+- `state.db` — all mailbox registrations, watched conversations, sync state
+- `fernet.key` — encryption key for refresh tokens at rest
 
-```bash
-cd /opt
-git clone https://github.com/timothiasthegreat/halo-outlook-extension.git
-cd halo-outlook-extension
-cd watcher && pip install -e . && cd ..
-cd server && npm ci --production && cd ..
-cd add-in && npm install && npm run build && cd ..
-
-# Fernet key
-export FERNET_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
-echo "FERNET_KEY=$FERNET_KEY" > /etc/halo-outlook-watcher/env
-```
-
-### systemd unit
-
-```ini
-[Unit]
-Description=Halo Outlook Extension
-After=network-online.target
-
-[Service]
-Type=simple
-User=halo-watcher
-WorkingDirectory=/opt/halo-outlook-extension
-EnvironmentFile=/etc/halo-outlook-watcher/env
-ExecStart=/opt/halo-outlook-extension/docker-entrypoint.sh
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Or split into two units: `watcher.watcher` for Python, `node server/server.js` for Express.
-
-### Logs
-
-```bash
-sudo journalctl -u halo-outlook-extension -f
-```
-
----
-
-## 4. Cron (Lightweight)
-
-Run `--once` mode via cron:
-
-```cron
-*/2 * * * * /usr/bin/flock -n /tmp/halo-watcher.lock /usr/bin/python3 -m watcher.watcher --once --config /etc/halo-outlook-watcher/config.yaml
-```
-
-Express must be kept running separately (systemd or a process manager).
-
----
-
-## Verifying
-
-```bash
-curl http://localhost:3000/health        # {"status":"ok"}
-curl http://localhost:3000/api/config    # tenant config
-```
-
-The watcher health endpoint (port 8888) is internal-only — not exposed to the host in Docker by default.
+If this volume is lost, every user must re-register their mailbox through the add-in.
 
 ---
 
@@ -220,9 +205,11 @@ The watcher health endpoint (port 8888) is internal-only — not exposed to the 
 
 | Problem | Likely cause | Fix |
 |---|---|---|
-| `FERNET_KEY environment variable is required` | Key not set | Run Docker (auto-generates) or set manually |
-| `halo.instance_url must start with https://` | Config URL has `http://` | Change to `https://` |
-| `Graph connection failed` | Wrong credentials | Verify app registration has `Mail.Read` + admin consent |
-| Health endpoint unreachable | Wrong port or firewall | Express: 3000 only |
-| Messages not journaling | No users registered | Open the add-in, click "Enable Watching" |
-| Add-in fails to load in Outlook | Missing TLS | Add a reverse proxy with HTTPS cert (see Reverse Proxy section above) |
+| `config.yaml` not found | Volume mount path wrong | Verify absolute path on host: `ls /opt/halo-outlook/config.yaml` |
+| `halo.instance_url must start with https://` | Config has `http://` | Change to `https://` |
+| `Graph connection failed` | Wrong tenant ID or secret | Verify app registration has `Mail.Read` + admin consent |
+| Add-in shows "Not configured" | `/api/config` not reachable | Check Express is running: `docker compose logs halo-outlook` |
+| Add-in fails to load in Outlook | Missing or misconfigured TLS | Verify reverse proxy has valid cert; check `npx office-addin-manifest validate` |
+| Messages not journaling | No users registered | User must open add-in and click "Enable Watching" |
+| `FERNET_KEY environment variable is required` | Key not generated | Docker entrypoint auto-generates on first run. Check `/app/state/fernet.key` exists in the volume. |
+| Portainer stack fails to pull | Docker Hub rate limiting | Log in to Docker Hub in Portainer: **Registries → Add registry** → `docker.io` with your credentials |
