@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-  Halo Outlook Extension — Add-in Manifest
+  Halo Outlook Extension - Add-in Manifest
   =========================================
 
   Deployer instructions:
   1. Replace @source_location@ with your hosted add-in URL (e.g. https://your-domain.com)
-  2. Upload this file to Microsoft 365 Admin Center → Integrated Apps
+  2. Upload this file to Microsoft 365 Admin Center -> Integrated Apps
   3. The add-in appears in Outlook within minutes
 
   Required Azure AD app permissions for the add-in:
@@ -27,7 +27,7 @@
   <ProviderName>Fireside IT Partners</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Halo Ticket Bridge" />
-  <Description DefaultValue="Create and track HaloPSA tickets from Outlook email conversations. Click to link a conversation to a ticket — future replies automatically journal." />
+  <Description DefaultValue="Create and track HaloPSA tickets from Outlook email conversations. Click to link a conversation to a ticket - future replies automatically journal." />
   <IconUrl DefaultValue="@source_location@/assets/icon-64.png" />
   <HighResolutionIconUrl DefaultValue="@source_location@/assets/icon-128.png" />
   <SupportUrl DefaultValue="https://github.com/timothiasthegreat/halo-outlook-extension" />
@@ -139,7 +139,7 @@
       </Host>
     </Hosts>
 
-    <!-- Resource strings (resid → values) -->
+    <!-- Resource strings (resid -> values) -->
     <Resources>
       <bt:Images>
         <bt:Image id="icon16" DefaultValue="@source_location@/assets/icon-16.png" />
@@ -163,7 +163,7 @@
       </bt:LongStrings>
     </Resources>
 
-    <!-- OnMessageSend handler — JavaScript function reference -->
+    <!-- OnMessageSend handler - JavaScript function reference -->
     <ExtendedPermissions>
       <ExtendedPermission>OnMessageSend</ExtendedPermission>
     </ExtendedPermissions>
