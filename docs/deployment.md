@@ -20,7 +20,7 @@ Bare-metal (Python + Node.js) is also supported.
 
 ## 1. Docker (Recommended)
 
-One container runs both Express (static + API on port 3000) and the watcher daemon (health on port 8888).
+One container runs both Express (static + API on port 3000) and the watcher daemon (health on port 8888, internal only).
 
 ```bash
 # 1. Build the add-in (one-time)
@@ -35,8 +35,53 @@ docker compose up -d
 # 4. Verify
 curl http://localhost:3000/health        # Express
 curl http://localhost:3000/api/config    # Tenant config
-curl http://localhost:8888/health        # Watcher
 ```
+
+### Reverse Proxy (required for production)
+
+The container serves HTTP only. **You must put a TLS-terminating reverse proxy in front for any deployment that is not purely local development.** Outlook enforces HTTPS for all add-in assets, and the bearer tokens flowing through `/api/register` are sensitive.
+
+**Recommended: Caddy** (automatic Let's Encrypt, 10 lines of config).
+
+Add to `docker-compose.yml`:
+
+```yaml
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"    # for HTTP→HTTPS redirect + Let's Encrypt
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+```
+
+Create `Caddyfile`:
+
+```
+your-domain.com {
+    reverse_proxy halo-outlook:3000
+}
+```
+
+Then remove the public port mapping from the `halo-outlook` service:
+
+```yaml
+  halo-outlook:
+    # ports:          # ← REMOVE the public mapping
+    #   - "3000:3000"
+    expose:
+      - "3000"        # ← internal-only, reachable by Caddy
+```
+
+**Nginx** also works. Either way, the reverse proxy:
+
+- Terminates TLS (Outlook requires HTTPS for add-in assets)
+- Protects bearer tokens in transit (plain HTTP leaks credentials)
+- Enables rate limiting and access logging at the edge
+
+For local development with `webpack serve`, TLS is handled by webpack-dev-server — no reverse proxy needed.
 
 ### Volumes
 
@@ -163,10 +208,11 @@ Express must be kept running separately (systemd or a process manager).
 ## Verifying
 
 ```bash
-curl http://localhost:3000/health        # {"status":"ok","uptime":N}
+curl http://localhost:3000/health        # {"status":"ok"}
 curl http://localhost:3000/api/config    # tenant config
-curl http://localhost:8888/health        # {"status":"ok","conversations":N,"mailboxes":N}
 ```
+
+The watcher health endpoint (port 8888) is internal-only — not exposed to the host in Docker by default.
 
 ---
 
@@ -177,5 +223,6 @@ curl http://localhost:8888/health        # {"status":"ok","conversations":N,"mai
 | `FERNET_KEY environment variable is required` | Key not set | Run Docker (auto-generates) or set manually |
 | `halo.instance_url must start with https://` | Config URL has `http://` | Change to `https://` |
 | `Graph connection failed` | Wrong credentials | Verify app registration has `Mail.Read` + admin consent |
-| Health endpoint unreachable | Wrong port or firewall | Express: 3000, Watcher: 8888 |
+| Health endpoint unreachable | Wrong port or firewall | Express: 3000 only |
 | Messages not journaling | No users registered | Open the add-in, click "Enable Watching" |
+| Add-in fails to load in Outlook | Missing TLS | Add a reverse proxy with HTTPS cert (see Reverse Proxy section above) |

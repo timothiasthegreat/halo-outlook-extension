@@ -18,7 +18,7 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"   # Express: static add-in + API endpoints
-      - "8888:8888"   # Watcher health-check (internal, optional)
+      # Watcher health-check is internal only — do NOT expose to host
     volumes:
       - ./config.yaml:/app/config.yaml:ro   # Config (read-only)
       - watcher_state:/app/state            # Persistent state.db + fernet.key

@@ -71,7 +71,7 @@ USER watcher
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD node -e "const http=require('http');http.get('http://localhost:3000/health',r=>{process.exit(r.statusCode===200?0:1)})"
 
-# Expose Express port (public) and watcher health port (internal)
+# Expose Express port (public). Watcher health (8888) is internal only — not exposed to host.
 EXPOSE 3000 8888
 
 ENTRYPOINT ["docker-entrypoint"]

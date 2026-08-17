@@ -57,6 +57,7 @@ function loadTenantConfig(configPath) {
 // ── Validation helpers ───────────────────────────────────────────────────
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAX_TOKEN_LENGTH = 8192; // OAuth refresh tokens are typically < 2 KB
 
 function validateEmail(value, field) {
   if (!value || typeof value !== "string" || !EMAIL_RE.test(value.trim())) {
@@ -148,10 +149,8 @@ app.use(express.static(staticDir));
 
 // ── Routes ───────────────────────────────────────────────────────────────
 
-const startTime = Date.now();
-
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", uptime: Math.floor((Date.now() - startTime) / 1000) });
+  res.json({ status: "ok" });
 });
 
 app.get("/api/config", (_req, res) => {
@@ -173,6 +172,14 @@ app.post("/api/register", (req, res) => {
   }
   if (!refresh_token || typeof refresh_token !== "string" || refresh_token.trim() === "") {
     return res.status(400).json({ error: "refresh_token is required and must be a non-empty string" });
+  }
+  if (refresh_token.length > MAX_TOKEN_LENGTH) {
+    return res.status(400).json({ error: `refresh_token exceeds maximum length of ${MAX_TOKEN_LENGTH} characters` });
+  }
+  // Basic format check: HaloPSA refresh tokens are base64-encoded Fernet tokens
+  // (~200-300 chars, no whitespace, base64url alphabet)
+  if (!/^[A-Za-z0-9\-_=]{40,}$/.test(refresh_token.trim())) {
+    return res.status(400).json({ error: "refresh_token does not appear to be a valid token" });
   }
 
   const normalizedEmail = email.trim().toLowerCase();

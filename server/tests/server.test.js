@@ -70,7 +70,8 @@ test("GET /health returns 200 with status ok", async () => {
   assert.equal(status, 200);
   const data = JSON.parse(body);
   assert.equal(data.status, "ok");
-  assert.ok(typeof data.uptime === "number");
+  // No uptime exposed — prevents information leakage
+  assert.equal(Object.keys(data).length, 1);
 });
 
 // ── Config endpoint ──────────────────────────────────────────────────────
@@ -114,12 +115,16 @@ test("GET /nonexistent returns 404", async () => {
   assert.equal(status, 404);
 });
 
-// ── Registration (smoke test — full register with Fernet comes in Phase 2) ──
+// ── Registration ─────────────────────────────────────────────────────────
+
+// Valid tokens: base64url, >= 40 chars. A plausible HaloPSA Fernet refresh
+// token is ~200-300 chars, base64url-encoded.
+const VALID_TOKEN = Buffer.from("x".repeat(200)).toString("base64url"); // 268 chars
 
 test("POST /api/register with valid body returns 200", async () => {
   const { status, body } = await post("/api/register", {
     email: "test@example.com",
-    refresh_token: "fake-refresh-token",
+    refresh_token: VALID_TOKEN,
   });
   assert.equal(status, 200);
   const data = JSON.parse(body);
@@ -127,9 +132,20 @@ test("POST /api/register with valid body returns 200", async () => {
   assert.equal(data.email, "test@example.com");
 });
 
+test("POST /api/register with additional_emails returns 200", async () => {
+  const { status, body } = await post("/api/register", {
+    email: "multi@example.com",
+    refresh_token: VALID_TOKEN,
+    additional_emails: ["shared@example.com"],
+  });
+  assert.equal(status, 200);
+  const data = JSON.parse(body);
+  assert.deepEqual(data.watching, ["multi@example.com", "shared@example.com"]);
+});
+
 test("POST /api/register with missing email returns 400", async () => {
   const { status, body } = await post("/api/register", {
-    refresh_token: "fake-refresh-token",
+    refresh_token: VALID_TOKEN,
   });
   assert.equal(status, 400);
   const data = JSON.parse(body);
@@ -145,13 +161,32 @@ test("POST /api/register with missing refresh_token returns 400", async () => {
   assert.ok(data.error.includes("refresh_token"));
 });
 
-test("POST /api/register with additional_emails returns 200", async () => {
+test("POST /api/register with token too short returns 400", async () => {
   const { status, body } = await post("/api/register", {
-    email: "multi@example.com",
-    refresh_token: "fake-refresh",
-    additional_emails: ["shared@example.com"],
+    email: "test@example.com",
+    refresh_token: "short", // < 40 chars, fails regex
   });
-  assert.equal(status, 200);
+  assert.equal(status, 400);
   const data = JSON.parse(body);
-  assert.deepEqual(data.watching, ["multi@example.com", "shared@example.com"]);
+  assert.ok(data.error.includes("does not appear to be a valid token"));
+});
+
+test("POST /api/register with non-base64url characters returns 400", async () => {
+  const { status, body } = await post("/api/register", {
+    email: "test@example.com",
+    refresh_token: "not a valid token!!!!! with spaces and stuff!!!", // spaces, !
+  });
+  assert.equal(status, 400);
+  const data = JSON.parse(body);
+  assert.ok(data.error.includes("does not appear to be a valid token"));
+});
+
+test("POST /api/register with token exceeding max length returns 400", async () => {
+  const { status, body } = await post("/api/register", {
+    email: "test@example.com",
+    refresh_token: "x".repeat(10000), // > 8192
+  });
+  assert.equal(status, 400);
+  const data = JSON.parse(body);
+  assert.ok(data.error.includes("exceeds maximum length"));
 });
