@@ -71,6 +71,13 @@
 
   <!-- Version overrides: adds taskpane pinning and OnMessageSend -->
   <VersionOverrides xmlns="http://schemas.microsoft.com/office/mailappversionoverrides/1.0" xsi:type="VersionOverridesV1_0">
+
+    <!-- Allowed domains for add-in fetch() calls -->
+    <AppDomains>
+      <AppDomain>@source_location@</AppDomain>
+      <AppDomain>https://your-instance.halopsa.com</AppDomain>
+    </AppDomains>
+
     <Requirements>
       <bt:Sets DefaultMinVersion="1.8">
         <bt:Set Name="Mailbox" />
