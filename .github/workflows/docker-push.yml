@@ -1,0 +1,53 @@
+# Halo Outlook Extension — CI
+# Builds and pushes the combined Docker image to Docker Hub on every push to main.
+#
+# Image: docker.io/timothiasthegreat/halo-outlook-extension:latest
+#
+# Requires two secrets set in GitHub repo Settings → Secrets and variables → Actions:
+#   DOCKERHUB_USERNAME  — Docker Hub username
+#   DOCKERHUB_TOKEN     — Docker Hub personal access token (NOT your password)
+#   (Create at https://hub.docker.com/settings/security → New Access Token)
+
+name: Build and Push
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # allow manual runs from the Actions tab
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Build add-in
+        run: |
+          cd add-in
+          npm ci
+          npm run build
+          cd ..
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            docker.io/timothiasthegreat/halo-outlook-extension:latest
+            docker.io/timothiasthegreat/halo-outlook-extension:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
