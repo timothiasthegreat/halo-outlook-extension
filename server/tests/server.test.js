@@ -63,6 +63,29 @@ function post(path, data) {
   });
 }
 
+function request(path, options = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      `${baseUrl}${path}`,
+      {
+        method: options.method ?? "GET",
+        headers: options.headers ?? {},
+      },
+      (res) => {
+        let body = "";
+        res.on("data", (chunk) => (body += chunk));
+        res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body }));
+        res.on("error", reject);
+      },
+    );
+
+    if (options.body !== undefined) {
+      req.write(options.body);
+    }
+    req.end();
+  });
+}
+
 // ── Health ───────────────────────────────────────────────────────────────
 
 test("GET /health returns 200 with status ok", async () => {
@@ -113,6 +136,38 @@ test("GET /taskpane.js returns JavaScript", async () => {
 test("GET /nonexistent returns 404", async () => {
   const { status } = await get("/nonexistent/file.xyz");
   assert.equal(status, 404);
+});
+
+// ── Proxy path normalization regression ────────────────────────────────
+
+test("GET /api/proxy/Tickets forwards to /api/Tickets", async () => {
+  const originalFetch = global.fetch;
+  let capturedUrl;
+
+  global.fetch = async (url) => {
+    capturedUrl = String(url);
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name.toLowerCase() === "content-type" ? "application/json" : null) },
+      text: async () => JSON.stringify({ ok: true }),
+    };
+  };
+
+  try {
+    const { status, body } = await request("/api/proxy/Tickets", {
+      method: "GET",
+      headers: { Authorization: "Bearer test-token" },
+    });
+
+    assert.equal(status, 200);
+    assert.ok(capturedUrl, "expected proxy to call upstream fetch");
+    assert.ok(capturedUrl.endsWith("/api/Tickets"), `expected '/api/Tickets' suffix, got '${capturedUrl}'`);
+    const data = JSON.parse(body);
+    assert.equal(data.ok, true);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 // ── Registration ─────────────────────────────────────────────────────────

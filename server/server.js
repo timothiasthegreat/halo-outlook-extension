@@ -177,7 +177,9 @@ app.get("/api/config", (_req, res) => {
  */
 app.all("/api/proxy/*", async (req, res) => {
   const start = Date.now();
-  const haloPath = "/api" + req.params[0]; // /api/proxy/Tickets → /api/Tickets
+  const proxiedPath = req.params[0] ?? "";
+  const normalizedPath = proxiedPath.startsWith("/") ? proxiedPath : `/${proxiedPath}`;
+  const haloPath = `/api${normalizedPath}`; // /api/proxy/Tickets -> /api/Tickets
   const cfg = loadTenantConfig(parseArgs().configPath);
   const url = `${cfg.haloUrl}${haloPath}`;
   const method = req.method;
