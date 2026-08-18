@@ -10,7 +10,7 @@
  * current tenant config without requiring a rebuild.
  */
 
-import { getConfig } from "./config";
+import { getConfig, loadConfig } from "./config";
 
 // ── types ──────────────────────────────────────────────────────
 
@@ -278,7 +278,15 @@ async function apiRequest<T>(
 export async function ensureAuthenticated(): Promise<void> {
   try {
     await getAccessToken();
-  } catch {
+  } catch (err: any) {
+    // If we got here with a token that failed, the config (client_id) may
+    // have changed. Re-fetch from the server before launching the dialog.
+    // loadConfig() always hits the server (no short-circuit on subsequent calls
+    // in config.ts v2), so this picks up any config.yaml changes.
+    if (err.message?.includes("Token refresh failed") ||
+        err.message?.includes("Not authenticated")) {
+      await loadConfig();
+    }
     // No valid token — launch the OAuth dialog
     // authorizeViaDialog() handles the full PKCE flow and stores the token
     await authorizeViaDialog();

@@ -5,8 +5,8 @@
  * endpoint (same origin — add-in is served from Express). Falls back to
  * the bundled defaults below if the fetch fails (local dev / offline).
  *
- * All consumers call `await getConfig()` instead of importing directly.
- * This keeps the module-level API simple while supporting dynamic updates.
+ * Config is re-fetched when the server returns a different config than
+ * what's cached, or when an auth call fails with a bad client_id.
  */
 
 export interface AddinConfig {
@@ -45,27 +45,43 @@ let loaded = false;
 
 /**
  * Fetch tenant config from the Express server, falling back to bundled defaults.
- * Safe to call multiple times — fetches once and caches.
+ *
+ * On first call: fetches /api/config and caches.
+ * On subsequent calls: re-fetches to detect config changes. If the server
+ * returns a different haloClientId or haloUrl, the cache is updated.
+ * If the fetch fails, returns the existing cached config.
  */
 export async function loadConfig(): Promise<AddinConfig> {
-  if (loaded) return getConfig();
-
   try {
     const resp = await fetch("/api/config");
     if (resp.ok) {
       const data = (await resp.json()) as AddinConfig;
-      runtimeConfig = { ...FALLBACK_CONFIG, ...data };
+      const fresh = { ...FALLBACK_CONFIG, ...data };
+
+      // Update cache if this is first load OR config changed
+      if (!loaded ||
+          runtimeConfig?.haloClientId !== fresh.haloClientId ||
+          runtimeConfig?.haloUrl !== fresh.haloUrl) {
+        runtimeConfig = fresh;
+      }
       loaded = true;
-      return runtimeConfig;
+      return runtimeConfig!;
     }
   } catch {
-    // Server not reachable — use fallback (local dev, offline)
+    // Server not reachable — use cached config if available, else fallback
   }
 
-  runtimeConfig = { ...FALLBACK_CONFIG };
-  loaded = true;
-  return runtimeConfig;
+  if (!loaded) {
+    runtimeConfig = { ...FALLBACK_CONFIG };
+    loaded = true;
+  }
+  return runtimeConfig!;
 }
+
+/**
+ * Force a config refresh from the server. Re-fetches /api/config
+ * and updates the cache. Safe to call any time config may be stale.
+ */
 
 /**
  * Get the current config (must call loadConfig() first).
