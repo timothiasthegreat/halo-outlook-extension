@@ -113,7 +113,7 @@ async function authorizeViaDialog(): Promise<string> {
   const cfg = getConfig();
 
   const authUrl =
-    `${cfg.haloUrl}/auth?` +
+    `${cfg.haloUrl}/auth/authorize?` +
     `response_type=code&` +
     `client_id=${encodeURIComponent(cfg.haloClientId)}&` +
     `redirect_uri=${encodeURIComponent(getRedirectUri())}&` +
