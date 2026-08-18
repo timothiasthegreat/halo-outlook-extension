@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Halo Authentication</title>
+  <style>
+    body {
+      font-family: Segoe UI, sans-serif;
+      text-align: center;
+      padding: 40px;
+      color: #333;
+      background: #f5f5f5;
+    }
+    .checkmark { font-size: 48px; margin-bottom: 12px; }
+    h2 { margin: 0 0 8px 0; }
+    p { color: #666; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="checkmark">&#10003;</div>
+  <h2>Authenticated</h2>
+  <p>You can close this window.</p>
+
+  <script>
+    (function() {
+      // Extract the authorization code from the redirect URL
+      // Halo redirects with ?code=...&state=... (or scope, etc.)
+      var params = new URLSearchParams(window.location.search);
+      var code = params.get("code");
+      var error = params.get("error");
+
+      if (code) {
+        // Send the auth code back to the parent Office dialog
+        Office.context.ui.messageParent(JSON.stringify({ code: code }));
+      } else {
+        // Halo may redirect without a code on cancel/error
+        var description = params.get("error_description") || error || "No authorization code returned";
+        Office.context.ui.messageParent(JSON.stringify({ error: description }));
+      }
+    })();
+  </script>
+</body>
+</html>

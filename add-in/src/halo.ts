@@ -98,9 +98,16 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
 
 /**
  * Launch the OAuth2 auth code flow via the Office dialog API.
- * Returns after the user authenticates and the redirect is captured.
+ * Returns after the user authenticates and the auth code is captured.
+ *
+ * The flow:
+ *   1. Open Office dialog to Halo's /auth endpoint
+ *   2. User logs in and authorizes the app
+ *   3. Halo redirects to auth-complete.html?code=...
+ *   4. auth-complete.html calls messageParent with the code
+ *   5. We receive the code, exchange it for a token, and store it
  */
-async function authorizeViaDialog(): Promise<void> {
+async function authorizeViaDialog(): Promise<string> {
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = await generateCodeChallenge(codeVerifier);
   const cfg = getConfig();
@@ -114,8 +121,7 @@ async function authorizeViaDialog(): Promise<void> {
     `code_challenge_method=S256&` +
     `scope=all`;
 
-  // Open the Halo auth page in an Office dialog
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<string>((resolve, reject) => {
     Office.context.ui.displayDialogAsync(
       authUrl,
       { height: 60, width: 40, displayInIframe: false },
@@ -125,14 +131,46 @@ async function authorizeViaDialog(): Promise<void> {
           return;
         }
         const dialog = result.value;
-        dialog.addEventHandler(Office.EventType.DialogMessageReceived, () => {
-          dialog.close();
-          resolve();
-        });
-        dialog.addEventHandler(Office.EventType.DialogEventReceived, () => {
-          dialog.close();
-          resolve();
-        });
+
+        // Receive the auth code from auth-complete.html
+        dialog.addEventHandler(
+          Office.EventType.DialogMessageReceived,
+          async (arg) => {
+            dialog.close();
+            try {
+              // arg can be { message, origin } on success or { error } on dialog error
+              if ("error" in arg) {
+                reject(new Error(`Dialog error: ${arg.error}`));
+                return;
+              }
+              const msg = JSON.parse(arg.message);
+              if (msg.error) {
+                reject(new Error(`Authorization failed: ${msg.error}`));
+                return;
+              }
+              if (!msg.code) {
+                reject(new Error("No authorization code received"));
+                return;
+              }
+
+              // Exchange the auth code for tokens
+              const tokenData = await exchangeCodeForToken(msg.code, codeVerifier);
+              storeToken(tokenData);
+              resolve(tokenData.access_token);
+            } catch (err: any) {
+              reject(err);
+            }
+          }
+        );
+
+        // Handles: user closes dialog, or Office error event
+        dialog.addEventHandler(
+          Office.EventType.DialogEventReceived,
+          () => {
+            dialog.close();
+            reject(new Error("Login was cancelled or the dialog was closed"));
+          }
+        );
       }
     );
   });
@@ -241,10 +279,11 @@ export async function ensureAuthenticated(): Promise<void> {
   try {
     await getAccessToken();
   } catch {
+    // No valid token — launch the OAuth dialog
+    // authorizeViaDialog() handles the full PKCE flow and stores the token
     await authorizeViaDialog();
-    throw new Error(
-      "Authentication required. Please configure your Halo OAuth credentials and restart the add-in."
-    );
+    // Verify we now have a working token
+    await getAccessToken();
   }
 }
 

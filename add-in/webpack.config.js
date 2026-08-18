@@ -43,6 +43,7 @@ module.exports = {
       patterns: [
         { from: "assets", to: "assets" },
         { from: "manifest.xml", to: "manifest.xml" },
+        { from: "src/auth-complete.html", to: "auth-complete.html" },
       ],
     }),
   ],
