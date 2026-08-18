@@ -248,6 +248,33 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
     return localStorage.getItem(`halo_last_sync_${conversationId}`);
   }
 
+  /**
+   * Register the user's mailbox with the watcher so future replies
+   * in this conversation are picked up by Graph polling.
+   * Uses the refresh token from the OAuth flow. Non-blocking — failure
+   * is silent (the watcher picks up missed messages on its next poll).
+   */
+  async registerMailbox(email: string): Promise<void> {
+    if (!email) return;
+    try {
+      const tokenRaw = localStorage.getItem("halo_outlook_token");
+      if (!tokenRaw) return;
+      const tokenData = JSON.parse(tokenRaw);
+      if (!tokenData?.refresh_token) return;
+
+      await fetch("/api/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          refresh_token: tokenData.refresh_token,
+        }),
+      });
+    } catch {
+      // Non-fatal — the watcher's next poll cycle may still catch up
+    }
+  }
+
   // ── actions ─────────────────────────────────────────────────
 
   handleCreateTicket = async (): Promise<void> => {
@@ -267,21 +294,35 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
         conversationId,
       });
 
+      // Halo's POST /Tickets response may not include all fields.
+      // Re-fetch the full ticket to get ticketnumber, status_name, etc.
+      let fullTicket = ticket;
+      try {
+        fullTicket = await halo.getTicket(ticket.id);
+      } catch {
+        // Use whatever we got from the create response
+      }
+
       // Cache the ticket for this session
-      this.setCachedTicket(conversationId, ticket);
+      this.setCachedTicket(conversationId, fullTicket);
       this.setState({
-        ticket,
+        ticket: fullTicket,
         mode: "tracked",
         creating: false,
         lastSyncAt: new Date().toISOString(),
       });
+
+      // Register the user's mailbox with the watcher so future replies
+      // are picked up by the Graph polling loop. Uses the refresh token
+      // from the OAuth flow stored in localStorage.
+      this.registerMailbox(senderEmail);
 
       // Also journal the initial email as an action
       const internetMessageId = await halo.getCurrentInternetMessageId();
       if (internetMessageId) {
         try {
           await halo.createAction({
-            ticket_id: ticket.id,
+            ticket_id: fullTicket.id,
             outcome_id: getConfig().actions.emailReceived,
             note: `Subject: ${subject}\nFrom: ${senderEmail}\n\n${stripHtml(body)}`,
             note_html: body || `<p>Email from ${senderEmail}</p>`,
