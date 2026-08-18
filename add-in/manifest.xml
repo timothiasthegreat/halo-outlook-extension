@@ -35,6 +35,11 @@
   <!-- Allowed domains for add-in fetch() calls -->
   <AppDomains>
     <AppDomain>@source_location@</AppDomain>
+    <!-- ⚠️ DEPLOYMENT: Replace with your HaloPSA instance URL.
+         The add-in's fetch() calls to this domain are blocked by Outlook
+         unless it appears here. The Express proxy at /api/proxy/* is the
+         preferred approach and doesn't require this entry, but the auth
+         flow (code exchange at /auth/token) still calls Halo directly. -->
     <AppDomain>https://your-instance.halopsa.com</AppDomain>
   </AppDomains>
 
@@ -120,7 +125,7 @@
 
             <ExtensionPoint xsi:type="LaunchEvent">
               <LaunchEvents>
-                <LaunchEvent Type="OnMessageSend" FunctionName="onMessageSendHandler" SendMode="SoftBlock" />
+                <LaunchEvent Type="OnMessageSend" FunctionName="onMessageSendHandler" SendMode="PromptUser" />
               </LaunchEvents>
               <SourceLocation resid="WebViewRuntime.Url" />
             </ExtensionPoint>
