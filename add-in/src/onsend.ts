@@ -10,18 +10,42 @@ import * as halo from "./halo";
 import config from "./config";
 
 /**
+ * Quick check: do we have a usable Halo token in localStorage?
+ * No network calls, no dialogs — pure synchronous localStorage read.
+ */
+function hasAuthToken(): boolean {
+  try {
+    const raw = localStorage.getItem("halo_outlook_token");
+    if (!raw) return false;
+    const token = JSON.parse(raw);
+    return !!token.access_token && Date.now() < token.expires_at - 60000;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Called by Office.js before a message is sent.
- * Checks if the conversation is tracked and posts the sent email
+ *
+ * Fast path: if the user is not authenticated (no stored token), allow
+ * the send immediately — don't trigger the auth dialog or block the send.
+ *
+ * Otherwise, check if the conversation is tracked and post the sent email
  * to the Halo ticket as an "email_sent" action.
  *
  * Returns: { allowEvent: true } — always allow sending (even if
  * journaling fails, the email must go through).
  */
 export async function onMessageSendHandler(): Promise<{ allowEvent: boolean }> {
+  // ── Fast path: skip if not authenticated ──
+  if (!hasAuthToken()) {
+    return { allowEvent: true };
+  }
+
   try {
     const conversationId = await halo.getCurrentConversationId();
     if (!conversationId) {
-      return { allowEvent: true }; // Not tracked, let it send normally
+      return { allowEvent: true };
     }
 
     // TODO: Check if this conversation is tracked (requires local state or Halo API).
@@ -36,18 +60,18 @@ export async function onMessageSendHandler(): Promise<{ allowEvent: boolean }> {
     // enhancement for instant journaling (rather than waiting for the next poll cycle).
 
     // If we could determine the ticketId, we would post the action:
-    // const config = getAddinConfig();
+    // const cfg = (await import("./config")).getConfig();
     // const subject = await halo.getCurrentSubject();
     // const body = await halo.getCurrentBody();
     // const internetMessageId = await halo.getCurrentInternetMessageId();
     //
     // await halo.createAction({
     //   ticket_id: ticketId,
-    //   outcome_id: config.actions.emailSent,
+    //   outcome_id: cfg.actions.emailSent,
     //   note: `Subject: ${subject}\n\n${stripHtml(body)}`,
     //   note_html: body,
     //   email_message_id: internetMessageId,
-    //   sendemail: false, // Already being sent by Outlook
+    //   sendemail: false,
     //   hiddenfromuser: false,
     // });
   } catch {

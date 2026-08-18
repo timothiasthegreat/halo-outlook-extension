@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <title>Halo Authentication</title>
+  <!-- Office.js is required for messageParent to work inside an Office dialog -->
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
   <style>
     body {
       font-family: Segoe UI, sans-serif;
@@ -22,22 +24,19 @@
   <p>You can close this window.</p>
 
   <script>
-    (function() {
-      // Extract the authorization code from the redirect URL
-      // Halo redirects with ?code=...&state=... (or scope, etc.)
+    // Wait for Office.js to initialize, then send the auth code to the parent
+    Office.onReady(function() {
       var params = new URLSearchParams(window.location.search);
       var code = params.get("code");
       var error = params.get("error");
 
       if (code) {
-        // Send the auth code back to the parent Office dialog
         Office.context.ui.messageParent(JSON.stringify({ code: code }));
       } else {
-        // Halo may redirect without a code on cancel/error
         var description = params.get("error_description") || error || "No authorization code returned";
         Office.context.ui.messageParent(JSON.stringify({ error: description }));
       }
-    })();
+    });
   </script>
 </body>
 </html>
