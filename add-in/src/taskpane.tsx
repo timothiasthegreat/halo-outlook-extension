@@ -114,7 +114,31 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
     Office.onReady()
       .then(() => loadConfig())
       .then(() => this.loadContext())
+      .then(() => this.checkAuth())
       .catch((err) => this.setState({ error: err.message, loading: false }));
+  }
+
+  /**
+   * Check whether we have a valid Halo token. If not, switch to login mode.
+   * Only checks localStorage — does NOT trigger the auth dialog.
+   */
+  async checkAuth(): Promise<void> {
+    // Check localStorage directly for a stored token (no dialog trigger)
+    const raw = localStorage.getItem("halo_outlook_token");
+    if (!raw) {
+      this.setState({ mode: "login" });
+      return;
+    }
+    try {
+      const token = JSON.parse(raw);
+      // If expired, show login
+      if (!token.access_token || Date.now() > token.expires_at - 60000) {
+        this.setState({ mode: "login" });
+      }
+      // Otherwise, user is authenticated — stay in current mode
+    } catch {
+      this.setState({ mode: "login" });
+    }
   }
 
   async loadContext(): Promise<void> {
@@ -225,7 +249,12 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
         }
       }
     } catch (err: any) {
-      this.setState({ error: err.message, creating: false });
+      // If auth error, switch to login mode so user can sign in
+      if (err.message?.includes("Not authenticated") || err.message?.includes("Session expired")) {
+        this.setState({ mode: "login", creating: false });
+      } else {
+        this.setState({ error: err.message, creating: false });
+      }
     }
   };
 
@@ -238,7 +267,11 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       const tickets = await halo.searchTickets(searchQuery.trim());
       this.setState({ searchResults: tickets, searching: false });
     } catch (err: any) {
-      this.setState({ error: err.message, searching: false });
+      if (err.message?.includes("Not authenticated") || err.message?.includes("Session expired")) {
+        this.setState({ mode: "login", searching: false });
+      } else {
+        this.setState({ error: err.message, searching: false });
+      }
     }
   };
 
@@ -262,7 +295,11 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
         lastSyncAt: new Date().toISOString(),
       });
     } catch (err: any) {
-      this.setState({ error: err.message, linking: false });
+      if (err.message?.includes("Not authenticated") || err.message?.includes("Session expired")) {
+        this.setState({ mode: "login", linking: false });
+      } else {
+        this.setState({ error: err.message, linking: false });
+      }
     }
   };
 
@@ -278,7 +315,11 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
   handleLogin = (): void => {
     halo
       .ensureAuthenticated()
-      .then(() => this.loadContext())
+      .then(() => {
+        // Auth succeeded — go back to untracked mode with fresh context
+        this.setState({ mode: "untracked", error: null });
+        this.loadContext();
+      })
       .catch((err) => this.setState({ error: err.message }));
   };
 
