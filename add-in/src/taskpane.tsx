@@ -34,6 +34,8 @@ interface TaskpaneState {
   // UI state
   mode: "untracked" | "tracked" | "link" | "login" | "setup";
   ticketTypeId: number;
+  ticketTypes: Array<{ id: number; name: string }>;
+  ticketTypesLoading: boolean;
   searchQuery: string;
   searchResults: halo.HaloTicket[];
   searching: boolean;
@@ -101,6 +103,8 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       senderEmail: "",
       mode: "untracked",
       ticketTypeId: getConfig().defaultTicketTypeId,
+      ticketTypes: [],
+      ticketTypesLoading: false,
       searchQuery: "",
       searchResults: [],
       searching: false,
@@ -115,7 +119,46 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       .then(() => loadConfig())
       .then(() => this.loadContext())
       .then(() => this.checkAuth())
+      .then(() => this.fetchTicketTypes())
       .catch((err) => this.setState({ error: err.message, loading: false }));
+  }
+
+  /**
+   * Fetch ticket types from the Express server (which proxies to Halo).
+   * Sends the user's OAuth token so results respect agent permissions.
+   * Falls back to a single default type if the fetch fails.
+   */
+  async fetchTicketTypes(): Promise<void> {
+    const defaultTypeId = getConfig().defaultTicketTypeId;
+    this.setState({ ticketTypesLoading: true });
+    try {
+      const token = localStorage.getItem("halo_outlook_token");
+      const tokenData = token ? JSON.parse(token) : null;
+      if (!tokenData?.access_token) {
+        throw new Error("Not authenticated");
+      }
+      const resp = await fetch("/api/ticket-types", {
+        headers: {
+          Authorization: `Bearer ${tokenData.access_token}`,
+        },
+      });
+      if (!resp.ok) throw new Error(`Server returned ${resp.status}`);
+      const types = await resp.json();
+      if (types.length > 0) {
+        this.setState({ ticketTypes: types, ticketTypesLoading: false });
+        // If current ticketTypeId isn't in the list, switch to default
+        if (!types.find((t: any) => t.id === this.state.ticketTypeId)) {
+          this.setState({ ticketTypeId: defaultTypeId });
+        }
+        return;
+      }
+    } catch {
+      // Fall back to a single default type
+    }
+    this.setState({
+      ticketTypes: [{ id: defaultTypeId, name: "Ticket" }],
+      ticketTypesLoading: false,
+    });
   }
 
   /**
@@ -319,6 +362,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
         // Auth succeeded — go back to untracked mode with fresh context
         this.setState({ mode: "untracked", error: null });
         this.loadContext();
+        this.fetchTicketTypes();
       })
       .catch((err) => this.setState({ error: err.message }));
   };
@@ -338,6 +382,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       searchQuery,
       subject,
       ticketTypeId,
+      ticketTypes,
     } = this.state;
 
     return (
@@ -412,10 +457,9 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
               value={ticketTypeId}
               onChange={(e) => this.setState({ ticketTypeId: Number(e.target.value) })}
             >
-              <option value={1}>Incident</option>
-              <option value={2}>Service Request</option>
-              <option value={3}>Change</option>
-              <option value={4}>Problem</option>
+              {ticketTypes.map((tt) => (
+                <option key={tt.id} value={tt.id}>{tt.name}</option>
+              ))}
             </select>
 
             <button

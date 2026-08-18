@@ -22,8 +22,8 @@ export interface AddinConfig {
   /** Custom field ID that stores conversationId on tickets */
   customFieldConvId: number;
   /** Default ticket type for new tickets created from conversations */
-  defaultTicketTypeId: number;
-}
+    defaultTicketTypeId: number;
+  }
 
 // ── Bundled defaults (fallback when /api/config is unavailable) ──
 
@@ -35,8 +35,8 @@ const FALLBACK_CONFIG: AddinConfig = {
     emailSent: 16,
   },
   customFieldConvId: 285,
-  defaultTicketTypeId: 1,
-};
+    defaultTicketTypeId: 1,
+  };
 
 // ── Runtime config cache ──────────────────────────────────────
 

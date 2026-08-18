@@ -163,6 +163,55 @@ app.get("/api/config", (_req, res) => {
 });
 
 /**
+ * Fetch ticket types from Halo's API, filtered to those usable for tickets.
+ * Uses the agent's own OAuth token so results respect their permissions.
+ *
+ * Cached per-agent (by token hash) for 5 minutes.
+ */
+const ticketTypesCaches = new Map(); // key: token-hash, value: { at: timestamp, types: [...] }
+const TICKET_TYPES_CACHE_MS = 5 * 60 * 1000; // 5 minutes
+
+app.get("/api/ticket-types", async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Authorization header required" });
+  }
+  const token = authHeader.slice(7);
+
+  // Per-agent cache by token prefix (first 20 chars — unique enough, not the full token)
+  const cacheKey = token.slice(0, 20);
+  const cached = ticketTypesCaches.get(cacheKey);
+  const now = Date.now();
+  if (cached && (now - cached.at) < TICKET_TYPES_CACHE_MS) {
+    return res.json(cached.types);
+  }
+
+  const cfg = loadTenantConfig(parseArgs().configPath);
+  try {
+    const url = `${cfg.haloUrl}/api/TicketType?$filter=use eq 'tickets' and visible eq true&$select=id,name`;
+    const resp = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      console.error(`[ticket-types] Halo returned ${resp.status}: ${text.slice(0, 200)}`);
+      return res.status(502).json({ error: "Failed to fetch ticket types from Halo" });
+    }
+    const data = await resp.json();
+    const types = Array.isArray(data) ? data : (data.ticket_types || data.records || []);
+    const result = types.map((t) => ({ id: t.id, name: t.name })).sort((a, b) => a.name.localeCompare(b.name));
+    ticketTypesCaches.set(cacheKey, { at: now, types: result });
+    res.json(result);
+  } catch (err) {
+    console.error("[ticket-types] Error fetching from Halo:", err.message);
+    res.status(502).json({ error: "Ticket types unavailable", detail: err.message });
+  }
+});
+
+/**
  * Proxy Halo API requests through the Express server.
  *
  * The add-in browser context cannot directly call Halo's API unless
