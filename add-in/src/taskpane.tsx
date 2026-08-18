@@ -255,25 +255,40 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
    * is silent (the watcher picks up missed messages on its next poll).
    */
   async registerMailbox(email: string): Promise<void> {
-    if (!email) return;
-    try {
-      const tokenRaw = localStorage.getItem("halo_outlook_token");
-      if (!tokenRaw) return;
-      const tokenData = JSON.parse(tokenRaw);
-      if (!tokenData?.refresh_token) return;
+      if (!email) return;
+      try {
+        const tokenRaw = localStorage.getItem("halo_outlook_token");
+        if (!tokenRaw) {
+          console.warn("[registerMailbox] No token in localStorage");
+          return;
+        }
+        const tokenData = JSON.parse(tokenRaw);
 
-      await fetch("/api/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email,
-          refresh_token: tokenData.refresh_token,
-        }),
-      });
-    } catch {
-      // Non-fatal — the watcher's next poll cycle may still catch up
+        // Use refresh_token if available, otherwise pass the access_token
+        // (the watcher can use it for initial Graph auth, then refresh on its own)
+        const refreshToken = tokenData?.refresh_token || tokenData?.access_token;
+        if (!refreshToken) {
+          console.warn("[registerMailbox] No token available to register");
+          return;
+        }
+
+        const resp = await fetch("/api/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email,
+            refresh_token: refreshToken,
+          }),
+        });
+        if (!resp.ok) {
+          console.warn(`[registerMailbox] Registration failed: ${resp.status}`);
+        } else {
+          console.log(`[registerMailbox] Registered ${email} successfully`);
+        }
+      } catch (err: any) {
+        console.warn("[registerMailbox] Error:", err.message);
+      }
     }
-  }
 
   // ── actions ─────────────────────────────────────────────────
 

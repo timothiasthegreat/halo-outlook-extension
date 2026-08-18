@@ -4,31 +4,37 @@ interface MailboxEvent {
   completed: (options: { allowEvent: boolean; errorMessage?: string }) => void;
 }
 
-// Track whether Office.js has been initialized for this runtime session
-let initialized = false;
-
+/**
+ * OnMessageSend launch event handler.
+ *
+ * Called by Outlook before a message is sent. Must complete quickly —
+ * the PromptUser dialog appears if this handler takes too long.
+ *
+ * Strategy: always allow the send. Journaling to Halo is best-effort.
+ * If anything goes wrong (auth missing, network error, timeout), we
+ * bail out immediately and let the email go through.
+ */
 async function onMessageSendLaunch(event: MailboxEvent): Promise<void> {
-  // Guard: ensure Office.js is ready before we touch Office.context.
-  // Without this, OnMessageSend can fire before the runtime is initialized,
-  // causing the handler to hang until SoftBlock's ~5s timeout.
-  if (!initialized) {
-    try {
-      await Office.onReady();
-      initialized = true;
-    } catch {
-      // Office.js failed to init — allow send immediately, don't block
+  // Fire-and-forget: call the handler but don't block on it.
+  // The PromptUser dialog shows briefly while we work, but the send
+  // always proceeds regardless of handler outcome.
+  onMessageSendHandler()
+    .then((result) => {
+      event.completed({ allowEvent: result.allowEvent !== false });
+    })
+    .catch(() => {
       event.completed({ allowEvent: true });
-      return;
-    }
-  }
+    });
 
-  try {
-    const result = await onMessageSendHandler();
-    event.completed({ allowEvent: result.allowEvent !== false });
-  } catch {
-    // Never block send on runtime or service errors.
-    event.completed({ allowEvent: true });
-  }
+  // Safety net: if the handler hangs (e.g. Office.js not ready),
+  // allow the send after 2 seconds max.
+  setTimeout(() => {
+    try {
+      event.completed({ allowEvent: true });
+    } catch {
+      // Already completed — no-op
+    }
+  }, 2000);
 }
 
 Office.actions.associate("onMessageSendHandler", onMessageSendLaunch);
