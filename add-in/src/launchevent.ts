@@ -5,36 +5,46 @@ interface MailboxEvent {
 }
 
 /**
+ * Register the OnMessageSend handler AFTER Office.js is fully initialized.
+ * This prevents "Office.js has not fully loaded" errors in the Smart Alerts runtime.
+ */
+Office.onReady(function () {
+  Office.actions.associate("onMessageSendHandler", onMessageSendLaunch);
+});
+
+/**
  * OnMessageSend launch event handler.
  *
- * Called by Outlook before a message is sent. Must complete quickly —
- * the PromptUser dialog appears if this handler takes too long.
- *
- * Strategy: always allow the send. Journaling to Halo is best-effort.
- * If anything goes wrong (auth missing, network error, timeout), we
- * bail out immediately and let the email go through.
+ * Strategy: always allow the send. Journaling is fire-and-forget.
+ * A 2-second safety net ensures the send always proceeds regardless
+ * of what happens in the handler.
  */
-async function onMessageSendLaunch(event: MailboxEvent): Promise<void> {
-  // Fire-and-forget: call the handler but don't block on it.
-  // The PromptUser dialog shows briefly while we work, but the send
-  // always proceeds regardless of handler outcome.
-  onMessageSendHandler()
-    .then((result) => {
-      event.completed({ allowEvent: result.allowEvent !== false });
-    })
-    .catch(() => {
-      event.completed({ allowEvent: true });
-    });
+function onMessageSendLaunch(event: MailboxEvent): void {
+  let completed = false;
 
-  // Safety net: if the handler hangs (e.g. Office.js not ready),
-  // allow the send after 2 seconds max.
-  setTimeout(() => {
-    try {
+  // Safety net: allow send after 2 seconds no matter what
+  const timer = setTimeout(() => {
+    if (!completed) {
+      completed = true;
       event.completed({ allowEvent: true });
-    } catch {
-      // Already completed — no-op
     }
   }, 2000);
-}
 
-Office.actions.associate("onMessageSendHandler", onMessageSendLaunch);
+  // Fire the handler as a promise. If it completes before the timer,
+  // use its result. Otherwise the timer handles it.
+  onMessageSendHandler()
+    .then((result) => {
+      if (!completed) {
+        completed = true;
+        clearTimeout(timer);
+        event.completed({ allowEvent: result.allowEvent !== false });
+      }
+    })
+    .catch(() => {
+      if (!completed) {
+        completed = true;
+        clearTimeout(timer);
+        event.completed({ allowEvent: true });
+      }
+    });
+}

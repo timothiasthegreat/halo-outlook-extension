@@ -8,14 +8,5 @@
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
 </head>
 <body>
-  <script>
-    // The OnMessageSend handler must not run until Office.js is fully initialized.
-    // We load the webpack bundle dynamically after Office.onReady() fires.
-    Office.onReady(function() {
-      var script = document.createElement('script');
-      script.src = 'launchevent.js';
-      document.body.appendChild(script);
-    });
-  </script>
 </body>
 </html>

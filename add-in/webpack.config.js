@@ -38,9 +38,6 @@ module.exports = {
       template: "./src/commands.html",
       filename: "commands.html",
       chunks: ["launchevent"],
-      // Don't auto-inject the script — commands.html loads it
-      // dynamically after Office.onReady() fires.
-      inject: false,
     }),
     new CopyWebpackPlugin({
       patterns: [
