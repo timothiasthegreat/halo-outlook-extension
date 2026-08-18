@@ -336,6 +336,24 @@ export async function searchTickets(query: string): Promise<HaloTicket[]> {
 }
 
 /**
+ * Look up a Halo user by email address.
+ * Returns the user ID if found, undefined otherwise.
+ */
+export async function findUserByEmail(email: string): Promise<number | undefined> {
+  if (!email) return undefined;
+  try {
+    const params = new URLSearchParams({ emailaddress: email });
+    const result = await apiRequest<{ users: Array<{ id: number }> }>(
+      "GET",
+      `/Users?${params}`
+    );
+    return result.users?.[0]?.id;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Get a single ticket by ID.
  */
 export async function getTicket(ticketId: number): Promise<HaloTicket> {

@@ -287,10 +287,15 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
     this.setState({ creating: true, error: null });
     try {
       const body = await halo.getCurrentBody();
+
+      // Look up the user in Halo by email so the ticket has an owner
+      const userId = await halo.findUserByEmail(senderEmail);
+
       const ticket = await halo.createTicket({
         summary: subject || "Email from Outlook",
         details_html: body || `<p>Email from ${senderEmail}</p>`,
         tickettype_id: ticketTypeId,
+        user_id: userId,
         conversationId,
       });
 

@@ -250,6 +250,9 @@ app.all("/api/proxy/*", async (req, res) => {
     const fetchOpts = { method, headers };
     if (method !== "GET" && method !== "HEAD" && req.body) {
       fetchOpts["body"] = JSON.stringify(req.body);
+      // Log the request body for debugging (truncate to 500 chars)
+      const bodyPreview = JSON.stringify(req.body);
+      console.log(`[proxy]   → body: ${bodyPreview.slice(0, 500)}`);
     }
     const upstream = await fetch(url, fetchOpts);
     const elapsed = Date.now() - start;
