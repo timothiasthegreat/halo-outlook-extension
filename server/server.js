@@ -162,6 +162,66 @@ app.get("/api/config", (_req, res) => {
   }
 });
 
+/**
+ * Proxy Halo API requests through the Express server.
+ *
+ * The add-in browser context cannot directly call Halo's API unless
+ * service.firesideit.ca is in the manifest's <AppDomains>. By routing
+ * through this proxy, the add-in only needs access to its own origin.
+ *
+ * All requests are logged with timing for diagnostics.
+ *
+ * Usage: POST /api/proxy/Tickets  (same path and method as Halo API)
+ * The add-in sends its bearer token in the Authorization header, which
+ * this proxy forwards unchanged to Halo.
+ */
+app.all("/api/proxy/*", async (req, res) => {
+  const start = Date.now();
+  const haloPath = "/api" + req.params[0]; // /api/proxy/Tickets → /api/Tickets
+  const cfg = loadTenantConfig(parseArgs().configPath);
+  const url = `${cfg.haloUrl}${haloPath}`;
+  const method = req.method;
+
+  // Forward the request to Halo
+  const headers = {
+    Accept: "application/json",
+  };
+  if (req.headers.authorization) {
+    headers["Authorization"] = req.headers.authorization;
+  }
+  if (req.headers["content-type"]) {
+    headers["Content-Type"] = req.headers["content-type"];
+  }
+
+  console.log(`[proxy] ${method} ${haloPath}`);
+
+  try {
+    const fetchOpts = { method, headers };
+    if (method !== "GET" && method !== "HEAD" && req.body) {
+      fetchOpts["body"] = JSON.stringify(req.body);
+    }
+    const upstream = await fetch(url, fetchOpts);
+    const elapsed = Date.now() - start;
+
+    // Read the response body once for forwarding and once for logging
+    const body = await upstream.text();
+    console.log(`[proxy] ${method} ${haloPath} → ${upstream.status} (${elapsed}ms)`);
+    if (!upstream.ok && body.length < 1000) {
+      console.log(`[proxy]   body: ${body}`);
+    }
+
+    res.status(upstream.status);
+    if (upstream.headers.get("content-type")) {
+      res.set("Content-Type", upstream.headers.get("content-type"));
+    }
+    res.send(body);
+  } catch (err) {
+    const elapsed = Date.now() - start;
+    console.error(`[proxy] ${method} ${haloPath} → ERROR (${elapsed}ms):`, err.message);
+    res.status(502).json({ error: "Halo API unreachable", detail: err.message });
+  }
+});
+
 app.post("/api/register", (req, res) => {
   const { email, refresh_token, additional_emails } = req.body;
 

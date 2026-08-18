@@ -252,8 +252,9 @@ async function apiRequest<T>(
   body?: unknown
 ): Promise<T> {
   const token = await getAccessToken();
-  const cfg = getConfig();
-  const url = `${cfg.haloUrl}/api${path}`;
+  // Route through the Express proxy to avoid AppDomain/CORS restrictions.
+  // The server relays to Halo's API, logs all requests, and returns the response.
+  const url = `/api/proxy${path}`;
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     Accept: "application/json",
