@@ -249,7 +249,12 @@ app.all("/api/proxy/*", async (req, res) => {
   const normalizedPath = proxiedPath.startsWith("/") ? proxiedPath : `/${proxiedPath}`;
   const haloPath = `/api${normalizedPath}`; // /api/proxy/Tickets -> /api/Tickets
   const cfg = loadTenantConfig(parseArgs().configPath);
-  const url = `${cfg.haloUrl}${haloPath}`;
+
+  // Preserve query string from the original request (e.g. ?search=quickbooks).
+  // Express's req.params captures only path segments; req.url includes ?query.
+  const queryIndex = (req.url ?? "").indexOf("?");
+  const queryString = queryIndex >= 0 ? req.url.slice(queryIndex) : "";
+  const url = `${cfg.haloUrl}${haloPath}${queryString}`;
   const method = req.method;
 
   // Forward the request to Halo
@@ -263,7 +268,7 @@ app.all("/api/proxy/*", async (req, res) => {
     headers["Content-Type"] = req.headers["content-type"];
   }
 
-  console.log(`[proxy] ${method} ${haloPath}`);
+  console.log(`[proxy] ${method} ${haloPath}${queryString}`);
 
   try {
     const fetchOpts = { method, headers };
