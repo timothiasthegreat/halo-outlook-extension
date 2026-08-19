@@ -132,6 +132,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       })
       .then(() => this.loadContext())
       .then(() => this.checkAuth())
+      .then(() => this.ensureRegistered())
       .then(() => this.fetchTicketTypes())
       .catch((err) => this.setState({ error: err.message, loading: false }));
   }
@@ -507,16 +508,37 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
   };
 
   handleLogin = (): void => {
-    halo
-      .ensureAuthenticated()
-      .then(() => {
-        // Auth succeeded — go back to untracked mode with fresh context
-        this.setState({ mode: "untracked", error: null });
-        this.loadContext();
-        this.fetchTicketTypes();
-      })
-      .catch((err) => this.setState({ error: err.message }));
-  };
+      halo
+        .ensureAuthenticated()
+        .then(() => {
+          this.setState({ mode: "untracked", error: null });
+          this.loadContext().then(() => {
+            this.ensureRegistered();
+            this.fetchTicketTypes();
+          });
+        })
+        .catch((err) => this.setState({ error: err.message }));
+    };
+
+  /**
+   * Ensure the authenticated user's mailbox is registered with the watcher.
+   *
+   * The watcher's state.db is separate from ticket linking — it needs a
+   * registered mailbox to decrypt tokens and post actions. This silently
+   * re-registers on every add-in load so that volume wipes and container
+   * restarts don't leave the watcher with an empty token store.
+   *
+   * Safe to call anytime — registerMailbox is an idempotent upsert.
+   */
+  async ensureRegistered(): Promise<void> {
+    const { userEmail, mode } = this.state;
+    // Only register when authenticated and the user email is known
+    if (mode === "login" || !userEmail) return;
+    // Don't bother if we already registered this session
+    if (localStorage.getItem("halo_watcher_registered") === userEmail) return;
+    await this.registerMailbox(userEmail);
+    localStorage.setItem("halo_watcher_registered", userEmail);
+  }
 
   // ── render ──────────────────────────────────────────────────
 

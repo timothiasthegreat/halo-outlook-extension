@@ -52,5 +52,6 @@ watcher:
   # Log level: DEBUG, INFO, WARNING, ERROR
   log_level: INFO
 
-  # SQLite database path (relative to working directory or absolute)
-  state_db_path: state.db
+  # SQLite database path — absolute path inside the persistent volume
+  # so state.db survives container restarts and recreations.
+  state_db_path: /app/state/state.db
