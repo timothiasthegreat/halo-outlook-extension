@@ -145,8 +145,19 @@ class SyncEngine:
                 else self._config.halo.actions.email_received
             )
             subject = msg.get("subject", "(no subject)")
+
+            # Prefer uniqueBody — Graph returns only the new content of this
+            # message, excluding quoted reply threads.  Falls back to
+            # bodyPreview (first ~255 chars of plain text) if uniqueBody is
+            # unavailable (non-Graph sources, older tenants).
+            unique_body = msg.get("uniqueBody", {})
+            if isinstance(unique_body, dict):
+                body_html = unique_body.get("content", "")
+            else:
+                body_html = ""
             body_preview = msg.get("bodyPreview", "")
-            body_html = msg.get("body", {}).get("content", f"<p>{body_preview}</p>")
+            if not body_html and body_preview:
+                body_html = f"<p>{body_preview}</p>"
 
             note = f"Subject: {subject}\nFrom: {from_address}\n\n{body_preview}"
             note_html = (

@@ -81,7 +81,8 @@ class GraphClient:
     # ── request helpers ────────────────────────────────────────
 
     async def _request(
-        self, path: str, *, params: dict[str, Any] | None = None
+        self, path: str, *, params: dict[str, Any] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         """Make an authenticated request with retry on 429/5xx."""
         assert self._client is not None
@@ -89,10 +90,13 @@ class GraphClient:
         max_retries = 3
         for attempt in range(max_retries):
             await self._ensure_token()
+            headers = {"Authorization": f"Bearer {self._access_token}"}
+            if extra_headers:
+                headers.update(extra_headers)
             response = await self._client.get(
                 path,
                 params=params,
-                headers={"Authorization": f"Bearer {self._access_token}"},
+                headers=headers,
             )
 
             if response.status_code < 500 and response.status_code != 429:
@@ -159,6 +163,10 @@ class GraphClient:
 
         If user_email is provided, queries that specific mailbox.
         Otherwise uses the configured user_email from GraphConfig.
+
+        Uses the Prefer header to request uniqueBody so that only the
+        new content of each message is returned — quoted reply threads
+        are excluded, preventing duplicate content in ticket journals.
         """
         email = user_email or self._config.user_email
         user_path = f"/users/{email}/messages"
@@ -166,7 +174,7 @@ class GraphClient:
             "$filter": f"conversationId eq '{conversation_id}'",
             "$select": (
                 "subject,from,sentDateTime,internetMessageId,"
-                "body,hasAttachments,id"
+                "uniqueBody,hasAttachments,id"
             ),
             "$top": "50",
         }
