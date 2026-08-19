@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 
 import structlog
@@ -167,10 +168,13 @@ async def run_daemon(config_path: str, health_port: int = HEALTH_PORT) -> None:
         GraphClient(config.graph) as graph,
     ):
         shared_state["_state_store"] = state
-        fernet_k = get_fernet()
-        raw_key = fernet_k._signing_key + fernet_k._encryption_key
+
+        # TokenManager needs the Fernet key as a base64 string so it can
+        # decrypt tokens that were encrypted by get_fernet() (which also
+        # reads FERNET_KEY from the environment).
+        fernet_key_str = os.environ["FERNET_KEY"]
         halo_config_dict = config.halo.model_dump()
-        token_manager = TokenManager(halo_config_dict, state, raw_key)
+        token_manager = TokenManager(halo_config_dict, state, fernet_key_str)
         engine = SyncEngine(config, token_manager, graph, state)
 
         await _run_health_server(shared_state, health_port)
@@ -202,10 +206,9 @@ async def run_once(config_path: str) -> None:
         StateStore(config.watcher.state_db_path) as state,
         GraphClient(config.graph) as graph,
     ):
-        fernet_k = get_fernet()
-        raw_key = fernet_k._signing_key + fernet_k._encryption_key
+        fernet_key_str = os.environ["FERNET_KEY"]
         halo_config_dict = config.halo.model_dump()
-        token_manager = TokenManager(halo_config_dict, state, raw_key)
+        token_manager = TokenManager(halo_config_dict, state, fernet_key_str)
         engine = SyncEngine(config, token_manager, graph, state)
         stats = await engine.sync_once()
         logger.info("sync_once_done", **stats)
