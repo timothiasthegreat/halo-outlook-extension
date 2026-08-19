@@ -117,10 +117,59 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
     // Load runtime config from Express server first, then initialize
     Office.onReady()
       .then(() => loadConfig())
+      .then(() => {
+        // Listen for email selection changes — when the taskpane is
+        // pinned open, componentDidMount only fires once. ItemChanged
+        // reloads context each time the user clicks a different email.
+        if (Office.context.mailbox) {
+          Office.context.mailbox.addHandlerAsync(
+            Office.EventType.ItemChanged,
+            (_eventArgs: any) => this.handleItemChanged()
+          );
+        }
+      })
       .then(() => this.loadContext())
       .then(() => this.checkAuth())
       .then(() => this.fetchTicketTypes())
       .catch((err) => this.setState({ error: err.message, loading: false }));
+  }
+
+  componentWillUnmount(): void {
+    // Clean up ItemChanged handler when the taskpane is closed
+    try {
+      if (Office.context.mailbox) {
+        Office.context.mailbox.removeHandlerAsync(
+          Office.EventType.ItemChanged,
+          (_result: any) => {} // fire-and-forget; pane is closing
+        );
+      }
+    } catch {
+      // Office.js may not be available during teardown
+    }
+  }
+
+  /**
+   * Called when the user clicks a different email while the taskpane
+   * is pinned open. Resets state and reloads context for the new item.
+   */
+  handleItemChanged(): void {
+    // Reset to loading/untracked until we know the new item's state
+    this.setState({
+      ticket: null,
+      loading: true,
+      error: null,
+      lastSyncAt: null,
+      conversationId: "",
+      subject: "",
+      senderEmail: "",
+      mode: "untracked",
+      searchQuery: "",
+      searchResults: [],
+      searching: false,
+      creating: false,
+      linking: false,
+    });
+    this.loadContext();
   }
 
   /**
