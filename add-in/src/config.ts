@@ -90,8 +90,3 @@ export async function loadConfig(): Promise<AddinConfig> {
 export function getConfig(): AddinConfig {
   return runtimeConfig ?? FALLBACK_CONFIG;
 }
-
-// For backward compatibility — direct import still works, but consumers
-// should migrate to `await getConfig()`.
-const config: AddinConfig = FALLBACK_CONFIG;
-export default config;

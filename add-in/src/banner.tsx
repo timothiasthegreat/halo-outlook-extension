@@ -5,7 +5,7 @@
  */
 
 import * as React from "react";
-import config from "./config";
+import { getConfig } from "./config";
 import type { HaloTicket } from "./halo";
 
 interface BannerProps {
@@ -92,7 +92,7 @@ const Banner: React.FC<BannerProps> = ({ ticket, loading, lastSyncAt }) => {
   }
 
   // ── tracked state ──
-  const ticketUrl = `${config.haloUrl.replace(/\/$/, "")}/tickets/${ticket.id}`;
+  const ticketUrl = `${getConfig().haloUrl.replace(/\/$/, "")}/tickets/${ticket.id}`;
   const ref = ticket.ticketnumber
     ? `TKT-${ticket.ticketnumber}`
     : `#${ticket.id}`;

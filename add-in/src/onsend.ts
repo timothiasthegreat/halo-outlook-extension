@@ -7,7 +7,6 @@
  */
 
 import * as halo from "./halo";
-import config from "./config";
 
 /**
  * Quick check: do we have a usable Halo token in localStorage?
