@@ -64,11 +64,18 @@ async def validate_config(config) -> list[str]:
 
 
 def _build_health_app(shared_state: dict):
-    """Build a tiny FastAPI app for health checks."""
-    from fastapi import FastAPI
-    from fastapi.responses import JSONResponse
+    """Build a tiny FastAPI app for health + state.db write-through.
 
-    app = FastAPI(title="Halo Outlook Watcher — Health")
+    The Express server proxies /api/conversations and /api/register to
+    this app so that all SQLite writes go through the single aiosqlite
+    connection the watcher holds.  This avoids the sql.js ↔ aiosqlite
+    WAL corruption that happens when two processes write the same file.
+    """
+    from fastapi import FastAPI, HTTPException
+    from fastapi.responses import JSONResponse
+    from watcher.crypto import get_fernet
+
+    app = FastAPI(title="Halo Outlook Watcher — API")
 
     @app.get("/health")
     async def health():
@@ -78,6 +85,49 @@ def _build_health_app(shared_state: dict):
             "mailboxes": shared_state.get("mailboxes", 0),
             "last_sync_at": shared_state.get("last_sync_at"),
         })
+
+    # ── state.db write-through endpoints ─────────────────────
+
+    @app.post("/track-conversation")
+    async def track_conversation(req: "dict"):
+        """Write a conversation→ticket mapping to the watcher's state.db."""
+        state = shared_state.get("_state_store")
+        if state is None:
+            raise HTTPException(503, "State store not initialized")
+        conv_id = req.get("conversationId")
+        ticket_id = req.get("ticketId")
+        watched_by = req.get("watchedBy")
+        if not conv_id or not ticket_id:
+            raise HTTPException(400, "conversationId and ticketId required")
+        await state.track_conversation(conv_id, int(ticket_id), watched_by)
+        return {"status": "ok", "conversationId": conv_id, "ticketId": ticket_id}
+
+    @app.post("/register-mailbox")
+    async def register_mailbox(req: "dict"):
+        """Register a watched mailbox in the watcher's state.db."""
+        state = shared_state.get("_state_store")
+        if state is None:
+            raise HTTPException(503, "State store not initialized")
+
+        email = req.get("email", "").strip().lower()
+        refresh_token = req.get("refresh_token", "")
+        additional = req.get("additional_emails") or []
+
+        if not email or "@" not in email:
+            raise HTTPException(400, "Valid email required")
+        if not refresh_token:
+            raise HTTPException(400, "refresh_token required")
+
+        fernet_k = get_fernet()
+        # fernet_k.encrypt returns bytes; we need a string for the DB
+        raw_bytes = fernet_k.encrypt(refresh_token.encode())
+        enc_token = raw_bytes.decode() if isinstance(raw_bytes, bytes) else raw_bytes
+
+        watching = [email] + [a.strip().lower() for a in additional if a.strip()]
+        for mailbox in watching:
+            await state.register_mailbox(mailbox, enc_token)
+
+        return {"status": "ok", "email": email, "watching": watching}
 
     return app
 
@@ -116,6 +166,7 @@ async def run_daemon(config_path: str, health_port: int = HEALTH_PORT) -> None:
         StateStore(config.watcher.state_db_path) as state,
         GraphClient(config.graph) as graph,
     ):
+        shared_state["_state_store"] = state
         fernet_k = get_fernet()
         raw_key = fernet_k._signing_key + fernet_k._encryption_key
         halo_config_dict = config.halo.model_dump()

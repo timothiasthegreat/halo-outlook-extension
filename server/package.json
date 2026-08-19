@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "express": "^4.21.0",
-    "js-yaml": "^4.1.0",
-    "sql.js": "^1.14.2"
+    "js-yaml": "^4.1.0"
   }
 }

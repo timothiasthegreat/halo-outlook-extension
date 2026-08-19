@@ -6,8 +6,9 @@
  * Serves the add-in's static files and exposes API endpoints for
  * tenant config, mailbox registration, and health checks.
  *
- * Stores registrations in the watcher's state.db (shared SQLite volume)
- * with Fernet-encrypted refresh tokens.
+ * All state.db writes are proxied to the Python watcher's FastAPI
+ * server (port 8888) so only a single aiosqlite connection touches
+ * the database — avoiding sql.js ↔ aiosqlite WAL corruption.
  *
  * Usage:
  *   node server.js [--port PORT] [--config PATH]
@@ -18,9 +19,6 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const yaml = require("js-yaml");
-const initSqlJs = require("sql.js");
-
-const { createFernet } = require("./fernet");
 
 // ── Config loading ───────────────────────────────────────────────────────
 
@@ -54,107 +52,47 @@ function loadTenantConfig(configPath) {
   };
 }
 
+// ── Watcher proxy helper ─────────────────────────────────────────────────
+
+const WATCHER_URL = "http://127.0.0.1:8888";
+
+/**
+ * Forward a JSON body to the Python watcher's FastAPI endpoint.
+ * @param {string} route - e.g. "/track-conversation"
+ * @param {object} body - JSON payload
+ * @param {string} label - log label
+ * @returns {Promise<{ok: boolean, status: number, body: any}>}
+ */
+async function forwardToWatcher(route, body, label) {
+  const url = WATCHER_URL + route;
+  const start = Date.now();
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const elapsed = Date.now() - start;
+    const data = await resp.json().catch(() => ({}));
+    console.log(`[watcher] POST ${route} → ${resp.status} (${elapsed}ms)`);
+    return { ok: resp.ok, status: resp.status, body: data };
+  } catch (err) {
+    const elapsed = Date.now() - start;
+    console.error(`[watcher] POST ${route} → ERROR (${elapsed}ms):`, err.message);
+    return { ok: false, status: 502, body: { error: "Watcher service unreachable", detail: err.message } };
+  }
+}
+
 // ── Validation helpers ───────────────────────────────────────────────────
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const MAX_TOKEN_LENGTH = 8192; // OAuth refresh tokens are typically < 2 KB
+const MAX_TOKEN_LENGTH = 8192;
 
 function validateEmail(value, field) {
   if (!value || typeof value !== "string" || !EMAIL_RE.test(value.trim())) {
     return `${field} must be a valid email address`;
   }
   return null;
-}
-
-// ── Database initialization ──────────────────────────────────────────────
-
-/** @type {import("sql.js").Database | null} */
-let db = null;
-let fernet = null;
-
-async function initDb() {
-  const SQL = await initSqlJs();
-  // Detect state.db path: if state_db_path is set in config, use it;
-  // otherwise default to ../state.db (watcher default).
-  const opts = parseArgs();
-  let dbPath;
-  try {
-    const config = yaml.load(fs.readFileSync(opts.configPath, "utf8"));
-    dbPath = config.watcher?.state_db_path || path.resolve(__dirname, "..", "state.db");
-  } catch {
-    dbPath = path.resolve(__dirname, "..", "state.db");
-  }
-
-  // Open or create the database
-  if (fs.existsSync(dbPath)) {
-    const buffer = fs.readFileSync(dbPath);
-    db = new SQL.Database(buffer);
-  } else {
-    db = new SQL.Database();
-  }
-  // Ensure the tables exist (schema matches watcher/state.py)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS watched_mailboxes (
-      email TEXT PRIMARY KEY,
-      refresh_token_enc TEXT NOT NULL,
-      token_status TEXT NOT NULL DEFAULT 'active',
-      registered_at TEXT NOT NULL,
-      last_token_refresh_at TEXT
-    )
-  `);
-  db.run(`
-    CREATE TABLE IF NOT EXISTS conversations (
-      conversation_id TEXT PRIMARY KEY,
-      ticket_id INTEGER NOT NULL,
-      created_at TEXT NOT NULL,
-      last_sync_at TEXT,
-      is_stale INTEGER DEFAULT 0,
-      watched_by TEXT
-    )
-  `);
-  db.run(`
-    CREATE TABLE IF NOT EXISTS synced_messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      conversation_id TEXT NOT NULL,
-      internet_message_id TEXT NOT NULL,
-      synced_at TEXT NOT NULL,
-      UNIQUE(conversation_id, internet_message_id)
-    )
-  `);
-  saveDb();
-  console.log(`SQLite state.db opened at ${dbPath}`);
-}
-
-function saveDb() {
-  if (!db) return;
-  const data = db.export();
-  const opts = parseArgs();
-  let dbPath;
-  try {
-    const config = yaml.load(fs.readFileSync(opts.configPath, "utf8"));
-    dbPath = config.watcher?.state_db_path || path.resolve(__dirname, "..", "state.db");
-  } catch {
-    dbPath = path.resolve(__dirname, "..", "state.db");
-  }
-  fs.writeFileSync(dbPath, Buffer.from(data));
-}
-
-function getFernet() {
-  if (!fernet) {
-    const key = process.env.FERNET_KEY;
-    if (!key) {
-      console.warn("FERNET_KEY not set — tokens will NOT be encrypted at rest!");
-      // Fall back to a no-op pass-through (base64 encode/decode only)
-      // This lets the server start for testing but logs a clear warning.
-      fernet = {
-        encrypt: (s) => Buffer.from(s).toString("base64"),
-        decrypt: (s) => Buffer.from(s, "base64").toString("utf8"),
-      };
-    } else {
-      fernet = createFernet(key);
-    }
-  }
-  return fernet;
 }
 
 // ── App ──────────────────────────────────────────────────────────────────
@@ -187,8 +125,8 @@ app.get("/api/config", (_req, res) => {
  *
  * Cached per-agent (by token hash) for 5 minutes.
  */
-const ticketTypesCaches = new Map(); // key: token-hash, value: { at: timestamp, types: [...] }
-const TICKET_TYPES_CACHE_MS = 5 * 60 * 1000; // 5 minutes
+const ticketTypesCaches = new Map();
+const TICKET_TYPES_CACHE_MS = 5 * 60 * 1000;
 
 app.get("/api/ticket-types", async (req, res) => {
   const authHeader = req.headers.authorization;
@@ -197,7 +135,6 @@ app.get("/api/ticket-types", async (req, res) => {
   }
   const token = authHeader.slice(7);
 
-  // Per-agent cache by token prefix (first 20 chars — unique enough, not the full token)
   const cacheKey = token.slice(0, 20);
   const cached = ticketTypesCaches.get(cacheKey);
   const now = Date.now();
@@ -237,27 +174,20 @@ app.get("/api/ticket-types", async (req, res) => {
  * service.firesideit.ca is in the manifest's <AppDomains>. By routing
  * through this proxy, the add-in only needs access to its own origin.
  *
- * All requests are logged with timing for diagnostics.
- *
  * Usage: POST /api/proxy/Tickets  (same path and method as Halo API)
- * The add-in sends its bearer token in the Authorization header, which
- * this proxy forwards unchanged to Halo.
  */
 app.all("/api/proxy/*", async (req, res) => {
   const start = Date.now();
   const proxiedPath = req.params[0] ?? "";
   const normalizedPath = proxiedPath.startsWith("/") ? proxiedPath : `/${proxiedPath}`;
-  const haloPath = `/api${normalizedPath}`; // /api/proxy/Tickets -> /api/Tickets
+  const haloPath = `/api${normalizedPath}`;
   const cfg = loadTenantConfig(parseArgs().configPath);
 
-  // Preserve query string from the original request (e.g. ?search=quickbooks).
-  // Express's req.params captures only path segments; req.url includes ?query.
   const queryIndex = (req.url ?? "").indexOf("?");
   const queryString = queryIndex >= 0 ? req.url.slice(queryIndex) : "";
   const url = `${cfg.haloUrl}${haloPath}${queryString}`;
   const method = req.method;
 
-  // Forward the request to Halo
   const headers = {
     Accept: "application/json",
   };
@@ -274,14 +204,12 @@ app.all("/api/proxy/*", async (req, res) => {
     const fetchOpts = { method, headers };
     if (method !== "GET" && method !== "HEAD" && req.body) {
       fetchOpts["body"] = JSON.stringify(req.body);
-      // Log the request body for debugging (truncate to 500 chars)
       const bodyPreview = JSON.stringify(req.body);
       console.log(`[proxy]   → body: ${bodyPreview.slice(0, 500)}`);
     }
     const upstream = await fetch(url, fetchOpts);
     const elapsed = Date.now() - start;
 
-    // Read the response body once for forwarding and once for logging
     const body = await upstream.text();
     console.log(`[proxy] ${method} ${haloPath} → ${upstream.status} (${elapsed}ms)`);
     if (!upstream.ok && body.length < 1000) {
@@ -301,14 +229,13 @@ app.all("/api/proxy/*", async (req, res) => {
 });
 
 /**
- * Track a conversation for the watcher — write to state.db's conversations table.
+ * Track a conversation for the watcher — proxied to Python watcher.
  *
- * The add-in calls this after linking a ticket to a conversation so the
- * Python watcher picks it up on the next poll cycle.
- *
- * Accepts: { conversationId, ticketId, watchedBy }
+ * The add-in calls this after linking a ticket to a conversation.
+ * The request is forwarded to the Python watcher's FastAPI endpoint
+ * which writes to state.db through its single aiosqlite connection.
  */
-app.post("/api/conversations", (req, res) => {
+app.post("/api/conversations", async (req, res) => {
   const { conversationId, ticketId, watchedBy } = req.body;
 
   if (!conversationId || typeof conversationId !== "string" || conversationId.trim() === "") {
@@ -318,31 +245,24 @@ app.post("/api/conversations", (req, res) => {
     return res.status(400).json({ error: "ticketId is required and must be a positive number" });
   }
 
-  if (!db) {
-    return res.status(503).json({ error: "Database not initialized" });
-  }
+  const { ok, status, body } = await forwardToWatcher("/track-conversation", {
+    conversationId: conversationId.trim(),
+    ticketId,
+    watchedBy: watchedBy || null,
+  }, "track-conversation");
 
-  const now = new Date().toISOString();
-  db.run(
-    `INSERT INTO conversations (conversation_id, ticket_id, created_at, last_sync_at, watched_by)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(conversation_id) DO UPDATE SET
-       ticket_id = excluded.ticket_id,
-       last_sync_at = excluded.last_sync_at,
-       is_stale = 0,
-       watched_by = COALESCE(excluded.watched_by, conversations.watched_by)`,
-    [conversationId.trim(), ticketId, now, now, watchedBy || null]
-  );
-  saveDb();
-
-  console.log(`[api] Tracked conversation ${conversationId.trim()} → ticket ${ticketId} (watched by ${watchedBy || "unknown"})`);
-  res.json({ status: "ok", conversationId: conversationId.trim(), ticketId });
+  res.status(status).json(body);
 });
 
-app.post("/api/register", (req, res) => {
+/**
+ * Register mailboxes for the watcher — proxied to Python watcher.
+ *
+ * The add-in calls this after OAuth consent to register monitored
+ * mailboxes. Forwarded to the Python watcher's FastAPI endpoint.
+ */
+app.post("/api/register", async (req, res) => {
   const { email, refresh_token, additional_emails } = req.body;
 
-  // Validate required fields
   const emailErr = validateEmail(email, "email");
   if (emailErr) {
     return res.status(400).json({ error: emailErr });
@@ -353,63 +273,25 @@ app.post("/api/register", (req, res) => {
   if (refresh_token.length > MAX_TOKEN_LENGTH) {
     return res.status(400).json({ error: `refresh_token exceeds maximum length of ${MAX_TOKEN_LENGTH} characters` });
   }
-  // Basic format check: HaloPSA refresh tokens are base64-encoded Fernet tokens
-  // (~200-300 chars, no whitespace, base64url alphabet)
   if (!/^[A-Za-z0-9\-_=]{40,}$/.test(refresh_token.trim())) {
     return res.status(400).json({ error: "refresh_token does not appear to be a valid token" });
   }
 
-  const normalizedEmail = email.trim().toLowerCase();
-
-  // Validate additional emails if provided
   const additional = Array.isArray(additional_emails) ? additional_emails : [];
-  const watching = [normalizedEmail];
   for (const extra of additional) {
     const err = validateEmail(extra, "additional_emails");
     if (err) {
       return res.status(400).json({ error: err });
     }
-    watching.push(extra.trim().toLowerCase());
   }
 
-  // Encrypt token and write to state.db
-  try {
-    const f = getFernet();
-    const encToken = f.encrypt(refresh_token);
-    const now = new Date().toISOString();
+  const { ok, status, body } = await forwardToWatcher("/register-mailbox", {
+    email: email.trim().toLowerCase(),
+    refresh_token: refresh_token.trim(),
+    additional_emails: additional.map(e => e.trim().toLowerCase()),
+  }, "register-mailbox");
 
-    if (!db) {
-      // Fallback: in-memory store if db not initialized (tests without state.db)
-      return res.json({
-        status: "ok",
-        email: normalizedEmail,
-        watching,
-        _db_initialized: false,
-      });
-    }
-
-    // Upsert: register each mailbox
-    const stmt = db.prepare(
-      `INSERT INTO watched_mailboxes
-         (email, refresh_token_enc, token_status, registered_at, last_token_refresh_at)
-       VALUES (?, ?, 'active', ?, ?)
-       ON CONFLICT(email) DO UPDATE SET
-         refresh_token_enc = excluded.refresh_token_enc,
-         token_status = 'active',
-         last_token_refresh_at = excluded.last_token_refresh_at`
-    );
-
-    for (const mailbox of watching) {
-      stmt.run([mailbox, encToken, now, now]);
-    }
-    stmt.free();
-    saveDb();
-
-    res.json({ status: "ok", email: normalizedEmail, watching });
-  } catch (err) {
-    console.error("Registration database error:", err);
-    res.status(500).json({ error: "Failed to store registration", detail: err.message });
-  }
+  res.status(status).json(body);
 });
 
 // ── Export for testing ───────────────────────────────────────────────────
@@ -420,14 +302,10 @@ module.exports = { app };
 
 if (require.main === module) {
   const opts = parseArgs();
-  initDb().then(() => {
-    app.listen(opts.port, () => {
-      console.log(`Halo Outlook Server listening on http://0.0.0.0:${opts.port}`);
-      console.log(`Serving add-in from: ${staticDir}`);
-      console.log(`Config path: ${opts.configPath}`);
-    });
-  }).catch((err) => {
-    console.error("Failed to initialize database:", err);
-    process.exit(1);
+  app.listen(opts.port, () => {
+    console.log(`Halo Outlook Server listening on http://0.0.0.0:${opts.port}`);
+    console.log(`Serving add-in from: ${staticDir}`);
+    console.log(`Config path: ${opts.configPath}`);
+    console.log(`Watcher API: ${WATCHER_URL}`);
   });
 }
