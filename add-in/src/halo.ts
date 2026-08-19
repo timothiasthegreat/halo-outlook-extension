@@ -484,6 +484,22 @@ export function getCurrentSenderEmail(): Promise<string> {
   });
 }
 
+/**
+ * Get the authenticated user's email address (the person using Outlook).
+ * This is the correct identity for watched_by — it's the person linking
+ * tickets and whose Graph mailbox should be polled.
+ */
+export function getCurrentUserEmail(): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      const email = Office.context.mailbox?.userProfile?.emailAddress ?? "";
+      resolve(email);
+    } catch {
+      resolve("");
+    }
+  });
+}
+
 export function getCurrentSubject(): Promise<string> {
   return new Promise((resolve, reject) => {
     const item = Office.context.mailbox?.item;

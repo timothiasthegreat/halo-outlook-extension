@@ -30,6 +30,7 @@ interface TaskpaneState {
   conversationId: string;
   subject: string;
   senderEmail: string;
+  userEmail: string;
 
   // UI state
   mode: "untracked" | "tracked" | "link" | "login" | "setup";
@@ -101,6 +102,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       conversationId: "",
       subject: "",
       senderEmail: "",
+      userEmail: "",
       mode: "untracked",
       ticketTypeId: getConfig().defaultTicketTypeId,
       ticketTypes: [],
@@ -162,6 +164,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       conversationId: "",
       subject: "",
       senderEmail: "",
+      userEmail: "",
       mode: "untracked",
       searchQuery: "",
       searchResults: [],
@@ -235,12 +238,13 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
 
   async loadContext(): Promise<void> {
     try {
-      const [convId, subject, senderEmail] = await Promise.all([
+      const [convId, subject, senderEmail, userEmail] = await Promise.all([
         halo.getCurrentConversationId(),
         halo.getCurrentSubject(),
         halo.getCurrentSenderEmail(),
+        halo.getCurrentUserEmail(),
       ]);
-      this.setState({ conversationId: convId, subject, senderEmail });
+      this.setState({ conversationId: convId, subject, senderEmail, userEmail });
 
       if (!convId) {
         this.setState({ loading: false });
@@ -354,7 +358,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
           body: JSON.stringify({
             conversationId,
             ticketId,
-            watchedBy: this.state.senderEmail || undefined,
+            watchedBy: this.state.userEmail || undefined,
           }),
         });
         if (!resp.ok) {
@@ -370,7 +374,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
   // ── actions ─────────────────────────────────────────────────
 
   handleCreateTicket = async (): Promise<void> => {
-    const { conversationId, subject, senderEmail, ticketTypeId } = this.state;
+    const { conversationId, subject, senderEmail, userEmail, ticketTypeId } = this.state;
     if (!conversationId) {
       this.setState({ error: "No conversation selected" });
       return;
@@ -412,7 +416,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       // Register the user's mailbox with the watcher so future replies
       // are picked up by the Graph polling loop. Uses the refresh token
       // from the OAuth flow stored in localStorage.
-      this.registerMailbox(senderEmail);
+      this.registerMailbox(userEmail);
 
       // Also journal the initial email as an action
       const internetMessageId = await halo.getCurrentInternetMessageId();
@@ -457,7 +461,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
   };
 
   handleLinkTicket = async (ticketId: number): Promise<void> => {
-    const { conversationId, subject, senderEmail } = this.state;
+    const { conversationId, subject, userEmail } = this.state;
     if (!conversationId) {
       this.setState({ error: "No conversation selected" });
       return;
@@ -479,7 +483,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       // Register the user's mailbox with the watcher so future replies
       // are picked up by the Graph polling loop. Uses the refresh token
       // from the OAuth flow stored in localStorage.
-      this.registerMailbox(senderEmail);
+      this.registerMailbox(userEmail);
 
       // Track the conversation in the watcher's state.db so the sync
       // engine knows which conversations to poll.
