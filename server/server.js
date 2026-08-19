@@ -92,7 +92,7 @@ async function initDb() {
   } else {
     db = new SQL.Database();
   }
-  // Ensure the table exists
+  // Ensure the tables exist (schema matches watcher/state.py)
   db.run(`
     CREATE TABLE IF NOT EXISTS watched_mailboxes (
       email TEXT PRIMARY KEY,
@@ -100,6 +100,25 @@ async function initDb() {
       token_status TEXT NOT NULL DEFAULT 'active',
       registered_at TEXT NOT NULL,
       last_token_refresh_at TEXT
+    )
+  `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS conversations (
+      conversation_id TEXT PRIMARY KEY,
+      ticket_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      last_sync_at TEXT,
+      is_stale INTEGER DEFAULT 0,
+      watched_by TEXT
+    )
+  `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS synced_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id TEXT NOT NULL,
+      internet_message_id TEXT NOT NULL,
+      synced_at TEXT NOT NULL,
+      UNIQUE(conversation_id, internet_message_id)
     )
   `);
   saveDb();
@@ -274,6 +293,45 @@ app.all("/api/proxy/*", async (req, res) => {
     console.error(`[proxy] ${method} ${haloPath} → ERROR (${elapsed}ms):`, err.message);
     res.status(502).json({ error: "Halo API unreachable", detail: err.message });
   }
+});
+
+/**
+ * Track a conversation for the watcher — write to state.db's conversations table.
+ *
+ * The add-in calls this after linking a ticket to a conversation so the
+ * Python watcher picks it up on the next poll cycle.
+ *
+ * Accepts: { conversationId, ticketId, watchedBy }
+ */
+app.post("/api/conversations", (req, res) => {
+  const { conversationId, ticketId, watchedBy } = req.body;
+
+  if (!conversationId || typeof conversationId !== "string" || conversationId.trim() === "") {
+    return res.status(400).json({ error: "conversationId is required and must be a non-empty string" });
+  }
+  if (!ticketId || typeof ticketId !== "number" || ticketId <= 0) {
+    return res.status(400).json({ error: "ticketId is required and must be a positive number" });
+  }
+
+  if (!db) {
+    return res.status(503).json({ error: "Database not initialized" });
+  }
+
+  const now = new Date().toISOString();
+  db.run(
+    `INSERT INTO conversations (conversation_id, ticket_id, created_at, last_sync_at, watched_by)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(conversation_id) DO UPDATE SET
+       ticket_id = excluded.ticket_id,
+       last_sync_at = excluded.last_sync_at,
+       is_stale = 0,
+       watched_by = COALESCE(excluded.watched_by, conversations.watched_by)`,
+    [conversationId.trim(), ticketId, now, now, watchedBy || null]
+  );
+  saveDb();
+
+  console.log(`[api] Tracked conversation ${conversationId.trim()} → ticket ${ticketId} (watched by ${watchedBy || "unknown"})`);
+  res.json({ status: "ok", conversationId: conversationId.trim(), ticketId });
 });
 
 app.post("/api/register", (req, res) => {

@@ -290,6 +290,34 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       }
     }
 
+  /**
+   * Register this conversation in the watcher's state.db so the sync engine
+   * picks it up. Non-blocking — failure is silent (the add-in still shows
+   * the ticket as linked via localStorage, and the watcher retries on its
+   * next poll cycle).
+   */
+  async trackConversation(conversationId: string, ticketId: number): Promise<void> {
+      if (!conversationId || !ticketId) return;
+      try {
+        const resp = await fetch("/api/conversations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversationId,
+            ticketId,
+            watchedBy: this.state.senderEmail || undefined,
+          }),
+        });
+        if (!resp.ok) {
+          console.warn(`[trackConversation] Failed: ${resp.status}`);
+        } else {
+          console.log(`[trackConversation] Tracked ${conversationId} → ticket ${ticketId}`);
+        }
+      } catch (err: any) {
+        console.warn("[trackConversation] Error:", err.message);
+      }
+    }
+
   // ── actions ─────────────────────────────────────────────────
 
   handleCreateTicket = async (): Promise<void> => {
@@ -398,6 +426,15 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
         linking: false,
         lastSyncAt: new Date().toISOString(),
       });
+
+      // Register the user's mailbox with the watcher so future replies
+      // are picked up by the Graph polling loop. Uses the refresh token
+      // from the OAuth flow stored in localStorage.
+      this.registerMailbox(senderEmail);
+
+      // Track the conversation in the watcher's state.db so the sync
+      // engine knows which conversations to poll.
+      this.trackConversation(conversationId, ticketId);
     } catch (err: any) {
       if (err.message?.includes("Not authenticated") || err.message?.includes("Session expired")) {
         this.setState({ mode: "login", linking: false });
