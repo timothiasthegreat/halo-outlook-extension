@@ -419,6 +419,11 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       // from the OAuth flow stored in localStorage.
       this.registerMailbox(userEmail);
 
+      // Track the conversation in the watcher's state.db so the sync
+      // engine knows which conversations to poll. This is the same
+      // three-write pattern as handleLinkTicket.
+      this.trackConversation(conversationId, fullTicket.id);
+
       // Also journal the initial email as an action
       const internetMessageId = await halo.getCurrentInternetMessageId();
       if (internetMessageId) {

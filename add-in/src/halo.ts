@@ -342,10 +342,10 @@ export async function searchTickets(query: string): Promise<HaloTicket[]> {
 export async function findUserByEmail(email: string): Promise<number | undefined> {
   if (!email) return undefined;
   try {
-    const params = new URLSearchParams({ emailaddress: email });
+    const params = new URLSearchParams({ search: email });
     const result = await apiRequest<{ users: Array<{ id: number }> }>(
       "GET",
-      `/Users?${params}`
+      `/users?${params}`
     );
     return result.users?.[0]?.id;
   } catch {
