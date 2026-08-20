@@ -3,9 +3,35 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class HaloActionsConfig(BaseModel):
+    """Ticket action outcome IDs — instance-specific."""
+
+    email_received: int = Field(default=0, description="Inbound email from customer")
+    email_sent: int = Field(default=16, description="Outbound email to customer")
+    internal_note: int = Field(default=7, description="Internal journal note")
+
+
+class HaloExclusionsConfig(BaseModel):
+    """Ticket type and status exclusions for the add-in UI."""
+
+    ticket_type_ids_create: list[int] = Field(
+        default_factory=list,
+        description="Ticket type IDs to exclude from the 'Create Ticket' dropdown",
+    )
+    ticket_type_ids_search: list[int] = Field(
+        default_factory=list,
+        description="Ticket type IDs to exclude from search results",
+    )
+    status_ids_search: list[int] = Field(
+        default_factory=list,
+        description="Ticket status IDs to exclude from search results",
+    )
 
 
 class HaloConfig(BaseModel):
@@ -17,6 +43,15 @@ class HaloConfig(BaseModel):
     actions: HaloActionsConfig = Field(default_factory=lambda: HaloActionsConfig())
     custom_field_conv_id: int = Field(default=285, description="Custom field ID for conversationId")
     default_ticket_type_id: int = Field(default=1, description="Default ticket type for new tickets")
+    exclusions: HaloExclusionsConfig = Field(default_factory=HaloExclusionsConfig)
+
+    @field_validator("exclusions", mode="before")
+    @classmethod
+    def _coerce_exclusions(cls, v: Any) -> Any:
+        """Coerce YAML null (bare ``exclusions:`` key) to an empty dict so Pydantic can validate."""
+        if v is None:
+            return {}
+        return v
 
     @property
     def auth_url(self) -> str:
@@ -32,14 +67,6 @@ class HaloConfig(BaseModel):
     def token_url(self) -> str:
         """Token endpoint URL."""
         return f"{self.auth_url}/token"
-
-
-class HaloActionsConfig(BaseModel):
-    """Ticket action outcome IDs — instance-specific."""
-
-    email_received: int = Field(default=0, description="Inbound email from customer")
-    email_sent: int = Field(default=16, description="Outbound email to customer")
-    internal_note: int = Field(default=7, description="Internal journal note")
 
 
 class GraphConfig(BaseModel):

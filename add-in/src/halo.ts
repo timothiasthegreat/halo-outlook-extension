@@ -18,6 +18,7 @@ export interface HaloTicket {
   id: number;
   summary: string;
   tickettype_name?: string;
+  ticket_type_id?: number;
   status_id: number;
   status_name?: string;
   user_id?: number;

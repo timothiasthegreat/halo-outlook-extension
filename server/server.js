@@ -49,6 +49,11 @@ function loadTenantConfig(configPath) {
     },
     customFieldConvId: config.halo.custom_field_conv_id ?? 285,
     defaultTicketTypeId: config.halo.default_ticket_type_id ?? 1,
+    exclusions: {
+      ticketTypeIdsCreate: config.halo.exclusions?.ticket_type_ids_create ?? [],
+      ticketTypeIdsSearch: config.halo.exclusions?.ticket_type_ids_search ?? [],
+      statusIdsSearch: config.halo.exclusions?.status_ids_search ?? [],
+    },
   };
 }
 

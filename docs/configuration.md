@@ -79,6 +79,32 @@ Default ticket type for new tickets. Default: `1` (Incident).
 
 ---
 
+### `halo.exclusions`
+
+Control which ticket types and statuses are visible in the add-in UI.
+All fields default to empty lists (no exclusions). The entire block is
+optional — omit it entirely for default behaviour.
+
+Exclusions only affect the add-in UI — they do **not** stop the watcher
+from syncing already-linked conversations. Once a ticket is linked to a
+conversation, sync continues regardless of later exclusion changes.
+
+```yaml
+halo:
+  exclusions:                       # optional — entire block can be omitted
+    ticket_type_ids_create: []      # optional — defaults to []
+    ticket_type_ids_search: []      # optional — defaults to []
+    status_ids_search: []           # optional — defaults to []
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `ticket_type_ids_create` | `list[int]` | `[]` | Ticket type IDs to exclude from the Create Ticket dropdown. Useful for types that shouldn't be created from Outlook (e.g., Quotes, Change Requests). |
+| `ticket_type_ids_search` | `list[int]` | `[]` | Ticket type IDs to exclude from search results. |
+| `status_ids_search` | `list[int]` | `[]` | Ticket status IDs to exclude from search results. Useful for hiding closed/resolved tickets from the link dialog. |
+
+---
+
 ## `graph` — Microsoft Graph Connection
 
 ### `graph.tenant_id`

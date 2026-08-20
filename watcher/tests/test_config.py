@@ -146,3 +146,80 @@ class TestLoadConfig:
                 load_config(path)
         finally:
             path.unlink()
+
+
+class TestHaloExclusionsConfig:
+
+    @staticmethod
+    def _fresh_config():
+        """Return a fresh copy of a valid config dict — VALID_CONFIG may be
+        mutated by earlier test_invalid_config_raises_validation_error."""
+        import copy
+        data = copy.deepcopy(VALID_CONFIG)
+        data["halo"]["instance_url"] = "https://your-instance.halopsa.com"
+        return data
+
+    def test_defaults_empty(self):
+        from watcher.config import HaloExclusionsConfig
+        cfg = HaloExclusionsConfig()
+        assert cfg.ticket_type_ids_create == []
+        assert cfg.ticket_type_ids_search == []
+        assert cfg.status_ids_search == []
+
+    def test_custom_values(self):
+        from watcher.config import HaloExclusionsConfig
+        cfg = HaloExclusionsConfig.model_validate({
+            "ticket_type_ids_create": [1, 2],
+            "ticket_type_ids_search": [3],
+            "status_ids_search": [4, 5, 6],
+        })
+        assert cfg.ticket_type_ids_create == [1, 2]
+        assert cfg.status_ids_search == [4, 5, 6]
+
+    def test_yaml_round_trip(self):
+        """Verify exclusions load from a full config YAML."""
+        data = self._fresh_config()
+        data["halo"]["exclusions"] = {"ticket_type_ids_create": [99]}
+        path = write_temp_config(data)
+        try:
+            config = load_config(path)
+            assert config.halo.exclusions.ticket_type_ids_create == [99]
+            assert config.halo.exclusions.ticket_type_ids_search == []
+        finally:
+            path.unlink()
+
+    def test_bare_exclusions_key(self):
+        """Bare `exclusions:` (YAML null) should not crash — coerced to defaults."""
+        data = self._fresh_config()
+        data["halo"]["exclusions"] = None
+        path = write_temp_config(data)
+        try:
+            config = load_config(path)
+            assert config.halo.exclusions.ticket_type_ids_create == []
+            assert config.halo.exclusions.ticket_type_ids_search == []
+        finally:
+            path.unlink()
+
+    def test_missing_exclusions_key(self):
+        """Entire `exclusions` block missing should work with defaults."""
+        data = self._fresh_config()
+        path = write_temp_config(data)
+        try:
+            config = load_config(path)
+            assert config.halo.exclusions.ticket_type_ids_create == []
+            assert config.halo.exclusions.ticket_type_ids_search == []
+        finally:
+            path.unlink()
+
+    def test_partial_exclusions(self):
+        """Only some exclusion keys defined — missing ones default to []."""
+        data = self._fresh_config()
+        data["halo"]["exclusions"] = {"ticket_type_ids_create": [1]}
+        path = write_temp_config(data)
+        try:
+            config = load_config(path)
+            assert config.halo.exclusions.ticket_type_ids_create == [1]
+            assert config.halo.exclusions.ticket_type_ids_search == []
+            assert config.halo.exclusions.status_ids_search == []
+        finally:
+            path.unlink()

@@ -27,6 +27,18 @@ halo:
   # Default ticket type for new tickets created from conversations
   default_ticket_type_id: 1
 
+  # Ticket type and status exclusions — control what appears in the add-in UI.
+  # These do NOT affect the watcher — once a conversation is linked to a ticket,
+  # syncing continues regardless of exclusion changes.
+  # The entire block is optional; all fields default to [] (no exclusions).
+  exclusions:
+    # Ticket types to hide from the "Create Ticket" dropdown
+    ticket_type_ids_create: []
+    # Ticket types to hide from search results
+    ticket_type_ids_search: []
+    # Ticket statuses to hide from search results (e.g. closed, resolved)
+    status_ids_search: []
+
 # Microsoft Graph connection (for email monitoring)
 graph:
   # Azure AD tenant ID

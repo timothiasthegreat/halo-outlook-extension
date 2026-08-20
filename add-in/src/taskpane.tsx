@@ -197,10 +197,14 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       });
       if (!resp.ok) throw new Error(`Server returned ${resp.status}`);
       const types = await resp.json();
-      if (types.length > 0) {
-        this.setState({ ticketTypes: types, ticketTypesLoading: false });
+      const cfg = getConfig();
+      const filtered = types.filter(
+        (t: any) => !cfg.exclusions.ticketTypeIdsCreate.includes(t.id)
+      );
+      if (filtered.length > 0) {
+        this.setState({ ticketTypes: filtered, ticketTypesLoading: false });
         // If current ticketTypeId isn't in the list, switch to default
-        if (!types.find((t: any) => t.id === this.state.ticketTypeId)) {
+        if (!filtered.find((t: any) => t.id === this.state.ticketTypeId)) {
           this.setState({ ticketTypeId: defaultTypeId });
         }
         return;
@@ -456,7 +460,13 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
     this.setState({ searching: true });
     try {
       const tickets = await halo.searchTickets(searchQuery.trim());
-      this.setState({ searchResults: tickets, searching: false });
+      const cfg = getConfig();
+      const filtered = tickets.filter(
+        (t) =>
+          !cfg.exclusions.ticketTypeIdsSearch.includes(t.ticket_type_id ?? 0) &&
+          !cfg.exclusions.statusIdsSearch.includes(t.status_id)
+      );
+      this.setState({ searchResults: filtered, searching: false });
     } catch (err: any) {
       if (err.message?.includes("Not authenticated") || err.message?.includes("Session expired")) {
         this.setState({ mode: "login", searching: false });
