@@ -164,6 +164,10 @@ class GraphClient:
         If user_email is provided, queries that specific mailbox.
         Otherwise uses the configured user_email from GraphConfig.
 
+        Drafts are excluded (isDraft eq false) — Outlook auto-saves
+        drafts with the same conversationId as the real message, and
+        journaling an in-progress draft confuses the ticket timeline.
+
         Uses the Prefer header to request uniqueBody so that only the
         new content of each message is returned — quoted reply threads
         are excluded, preventing duplicate content in ticket journals.
@@ -171,7 +175,10 @@ class GraphClient:
         email = user_email or self._config.user_email
         user_path = f"/users/{email}/messages"
         params = {
-            "$filter": f"conversationId eq '{conversation_id}'",
+            "$filter": (
+                f"conversationId eq '{conversation_id}'"
+                " and isDraft eq false"
+            ),
             "$select": (
                 "subject,from,sentDateTime,internetMessageId,"
                 "uniqueBody,hasAttachments,id"
