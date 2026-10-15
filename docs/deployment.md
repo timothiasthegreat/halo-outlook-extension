@@ -146,9 +146,12 @@ server {
         proxy_pass http://halo-outlook:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
+        client_max_body_size 25m;   # large HTML emails are proxied to Halo
     }
 }
 ```
+
+Nginx's default body limit is 1 MB, which makes Create Ticket fail with 413 on large emails. The Express server accepts up to 25 MB, so match that. Caddy has no default limit.
 
 ---
 
@@ -197,7 +200,10 @@ Only one directory needs backing up: the `watcher_state` volume. It contains:
 - `state.db` — all mailbox registrations, watched conversations, sync state
 - `fernet.key` — encryption key for refresh tokens at rest
 
-If this volume is lost, every user must re-register their mailbox through the add-in.
+If this volume is lost:
+
+- Each user sees the **Enable background sync** prompt the next time they open the add-in, and clicks it once.
+- The list of watched conversations lives in `state.db`, so conversations show as not linked until someone links them again. Re-linking is safe: the watcher checks the ticket's existing actions and won't journal an email twice.
 
 ---
 
@@ -210,6 +216,8 @@ If this volume is lost, every user must re-register their mailbox through the ad
 | `Graph connection failed` | Wrong tenant ID or secret | Verify app registration has `Mail.Read` + admin consent |
 | Add-in shows "Not configured" | `/api/config` not reachable | Check Express is running: `docker compose logs halo-outlook` |
 | Add-in fails to load in Outlook | Missing or misconfigured TLS | Verify reverse proxy has valid cert; check `npx office-addin-manifest validate` |
+| "Enable background sync" fails with 403 | The user's Halo agent email doesn't match their Outlook mailbox | Fix the agent's email in Halo, then click the button again |
+| Create Ticket fails with 413 | Reverse proxy body limit too small | Set `client_max_body_size 25m;` in nginx (see Step 3) |
 | Messages not journaling | User not registered, or their watcher token was revoked | User opens the add-in and clicks "Enable background sync" (the prompt appears whenever the watcher has no usable token for their mailbox) |
 | `FERNET_KEY environment variable is required` | Key not generated | Docker entrypoint auto-generates on first run. Check `/app/state/fernet.key` exists in the volume. |
 | Portainer stack fails to pull | Docker Hub rate limiting | Log in to Docker Hub in Portainer: **Registries → Add registry** → `docker.io` with your credentials |

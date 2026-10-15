@@ -34,6 +34,8 @@ halo:
 
 Where to find it: **Configuration → Integrations → Halo API → OAuth Application**. Create an application with **Auth Code (PKCE)** grant type and the `all` scope. No client secret is needed — the add-in handles the PKCE flow.
 
+Each user signs in with this app twice: once for the add-in, and once more when they click **Enable background sync**, which gives the watcher a refresh token of its own. The add-in reads the client ID from this file through `GET /api/config`, so there's nothing to set in the manifest.
+
 ```yaml
 halo:
   client_id: "your-halo-client-id"
@@ -154,8 +156,10 @@ Set these outside `config.yaml`:
 
 | Port | Service | Purpose |
 |---|---|---|
-| `3000` | Express | Static add-in + `/api/config` + `/api/register` |
-| `8888` | Watcher | Health check (`GET /health`) |
+| `3000` | Express | Static add-in, `/api/config`, the Halo API proxy (`/api/proxy/*`), `/api/ticket-types`, and the watcher endpoints `/api/register`, `/api/register/status`, `/api/conversations`. The watcher endpoints require the user's Halo access token. |
+| `8888` | Watcher | `GET /health` plus the internal API the Express server forwards to. Internal only — don't publish this port. |
+
+The Express server accepts request bodies up to 25 MB so large HTML emails can be proxied to Halo. If a reverse proxy sits in front, raise its limit to match (see [Deployment](deployment.md)).
 
 ---
 
@@ -182,6 +186,7 @@ graph:
 watcher:
   poll_interval_seconds: 90
   stale_conversation_days: 14
+  stale_poll_interval_seconds: 3600
   log_level: INFO
   state_db_path: state.db
 ```

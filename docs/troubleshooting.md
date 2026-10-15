@@ -25,7 +25,7 @@ Your Halo URL is missing `https://`. Change `http://` → `https://`.
 
 The watcher couldn't reach Halo or authenticate. Check:
 - `halo.instance_url` is correct (no trailing slash, no /api path)
-- `halo.client_id` and `halo.client_secret` are correct
+- `halo.client_id` is correct (`halo.client_secret` isn't used — PKCE needs no secret)
 - Your Halo instance is reachable from where the watcher runs
 
 ### `Graph connection failed`
@@ -52,19 +52,34 @@ pip install -e .
 
 The watcher's state database has no tracked conversations. This is normal if no emails have been linked yet.
 
-**Check:** Use the add-in to create a ticket from a conversation, or manually insert a test row:
+**Check:** Use the add-in to create a ticket from a conversation, or manually insert a test row. `watched_by` must be a mailbox registered in `watched_mailboxes` with `token_status = 'active'` — rows without it are skipped:
 
 ```sql
 -- In state.db (SQLite)
-INSERT INTO conversations (conversation_id, ticket_id, created_at, last_sync_at)
-VALUES ('AAQkAD...', 1234, datetime('now'), datetime('now'));
+INSERT INTO conversations (conversation_id, ticket_id, created_at, last_sync_at, watched_by)
+VALUES ('AAQkAD...', 1234, datetime('now'), datetime('now'), 'you@yourcompany.com');
 ```
+
+### Background sync is off for a user
+
+The watcher can only journal a mailbox it holds an active token for. Check:
+
+```sql
+SELECT email, token_status, last_token_refresh_at FROM watched_mailboxes;
+```
+
+- **`expired`** — Halo rejected the token (HTTP 400/401, logged as `token_refresh_failed`). The add-in shows **Enable background sync**; the user clicks it to register a fresh token.
+- **No row** — the user never enabled background sync, or the state volume was wiped. Same fix.
+- Temporary Halo problems (HTTP 429/5xx or network errors) don't expire tokens. The watcher logs them and retries on the next cycle.
+
+Registration answers **403** when the user's Halo agent email doesn't match their Outlook mailbox address. Fix the agent's email in Halo.
 
 ### Watcher runs but doesn't find new messages
 
 1. **Check the conversationId:** Verify the conversation exists in Exchange and has recent messages
 2. **Check Graph permissions:** Run `setup_check.py` to confirm the token works and the mailbox is accessible
-3. **Check dedup:** The watcher skips messages with `internetMessageId` already in `synced_messages` table. If messages were already synced before, they won't be re-synced
+3. **Check dedup:** The watcher skips messages whose `internetMessageId` is already in the `synced_messages` table, or already on the ticket as an action's `email_message_id` (for example, the email the add-in journaled on Create Ticket). Messages synced before won't be re-synced
+4. **Check staleness:** Conversations quiet for `stale_conversation_days` are marked stale. They're still watched, but only checked every `stale_poll_interval_seconds` (default hourly), so a late reply can take up to an hour to appear
 
 ### "The restriction or sort order is too complex" from Graph
 
@@ -75,7 +90,7 @@ Graph occasionally rejects the `$filter=conversationId eq '...'` query. The watc
 
 ### Action creation returns 401
 
-API keys cannot create actions in Halo. You must use OAuth2 client credentials. Verify your `halo.client_id` and `halo.client_secret` correspond to an OAuth application (not an API key).
+API keys cannot create actions in Halo — the watcher posts with each user's own OAuth (PKCE) token. Verify `halo.client_id` belongs to an OAuth application (not an API key), and that the user's row in `watched_mailboxes` is `active` (see **Background sync is off for a user** above).
 
 ---
 
@@ -114,9 +129,15 @@ If the container starts but the health check fails, the watcher may have exited 
 
 ### CORS errors in the add-in
 
-The add-in calls Halo's API directly from the browser. If you see CORS errors:
-- Halo must allow the add-in's origin. Some Halo instances may need CORS configuration.
-- Alternative: proxy API calls through the add-in's hosting server
+The add-in sends Halo API calls through the Express server's proxy (`/api/proxy/*`), so those don't hit CORS. Only the sign-in token exchange (`/auth/token`) goes from the browser straight to Halo. If that fails with a CORS error, Halo must allow the add-in's origin.
+
+### Conversation shows as "not linked"
+
+The add-in asks the watcher whether a conversation is tracked each time you open it. Tracking belongs to the mailbox that linked it: the banner appears for that user on any device, but not for other users. If it's missing for the user who linked it, the watcher couldn't be reached (the add-in then falls back to what it cached on that device) or the conversation was unlinked.
+
+### Create Ticket fails with 413
+
+The email is bigger than a body-size limit. The Express server accepts up to 25 MB; a reverse proxy in front may allow less (nginx defaults to 1 MB). Set `client_max_body_size 25m;` in nginx.
 
 ### Can't find conversationId
 
@@ -130,7 +151,12 @@ Office.js provides `item.conversationId` on MessageRead items. If it's empty:
 
 ### `state.db` is missing or corrupted
 
-The state database is not critical. If lost, simply restart the watcher — it will auto-create a fresh database. Previously synced messages may be re-synced, but the dedup logic prevents duplicate journal entries.
+If lost, restart the watcher — it auto-creates a fresh database. You do lose two things that live only in `state.db`:
+
+- **Watcher tokens.** Each user clicks **Enable background sync** again (the add-in prompts them).
+- **The watched-conversation list.** Conversations show as not linked until someone links them again.
+
+Re-syncing is safe: before posting, the watcher checks the ticket's existing actions for each email's `internetMessageId`, so nothing is journaled twice.
 
 ### Database is locked
 
