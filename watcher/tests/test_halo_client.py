@@ -180,6 +180,47 @@ class TestHaloClientActions:
 
 
 @pytest.mark.asyncio
+class TestHaloClientAttachments:
+    async def test_attach_to_ticket(self, token_manager, mock_api):
+        """Halo's endpoint is singular /Attachment; /Attachments returns 404."""
+        import base64
+        import json
+
+        route = mock_api.post("https://test.halopsa.com/api/Attachment").respond(
+            json=[{"id": 77, "filename": "report.pdf"}]
+        )
+
+        async with HaloClient(token_manager, "test@example.com", API_URL) as client:
+            result = await client.attach_to_ticket(
+                9999, "report.pdf", b"%PDF-1.4", action_id=42
+            )
+
+        assert result["id"] == 77
+        body = json.loads(route.calls.last.request.content)
+        assert body == [
+            {
+                "ticket_id": 9999,
+                "filename": "report.pdf",
+                "data_base64": base64.b64encode(b"%PDF-1.4").decode("ascii"),
+                "action_id": 42,
+            }
+        ]
+
+    async def test_attach_to_ticket_without_action(self, token_manager, mock_api):
+        import json
+
+        route = mock_api.post("https://test.halopsa.com/api/Attachment").respond(
+            json=[{"id": 78}]
+        )
+
+        async with HaloClient(token_manager, "test@example.com", API_URL) as client:
+            await client.attach_to_ticket(9999, "notes.txt", b"hi")
+
+        body = json.loads(route.calls.last.request.content)
+        assert "action_id" not in body[0]
+
+
+@pytest.mark.asyncio
 class TestHaloClientRetry:
     async def test_retries_on_500(self, token_manager):
         import httpx as httpx_mod

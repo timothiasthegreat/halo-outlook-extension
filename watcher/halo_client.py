@@ -237,17 +237,24 @@ class HaloClient:
         content: bytes,
         *,
         content_type: str = "application/octet-stream",
+        action_id: int | None = None,
     ) -> dict[str, Any]:
-        """Upload a file attachment to a ticket."""
-        payload = [
-            {
-                "ticket_id": ticket_id,
-                "filename": filename,
-                "contenttype": content_type,
-                "data_base64": base64.b64encode(content).decode("ascii"),
-            }
-        ]
-        response = await self._request("POST", "/Attachments", json=payload)
+        """Upload a file attachment to a ticket.
+
+        The endpoint is singular (/Attachment), unlike /Tickets and /Actions.
+        Passing action_id shows the file on that action rather than only on
+        the ticket. Halo infers the type from the filename, so content_type
+        is accepted for callers but not sent.
+        """
+        attachment: dict[str, Any] = {
+            "ticket_id": ticket_id,
+            "filename": filename,
+            "data_base64": base64.b64encode(content).decode("ascii"),
+        }
+        if action_id:
+            attachment["action_id"] = action_id
+
+        response = await self._request("POST", "/Attachment", json=[attachment])
         response.raise_for_status()
         data = response.json()
         logger.info(

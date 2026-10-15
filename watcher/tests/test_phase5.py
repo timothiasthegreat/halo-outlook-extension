@@ -98,6 +98,8 @@ class TestAttachmentSync:
         assert attach_call.kwargs["filename"] == "report.pdf"
         assert attach_call.kwargs["content_type"] == "application/pdf"
         assert attach_call.kwargs["content"] == b"fake-pdf-content"
+        # Linked to the email's action so the file shows on that journal entry.
+        assert attach_call.kwargs["action_id"] == 100
 
     async def test_attachments_skip_inline_images(self, state):
         config = make_config()
