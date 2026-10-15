@@ -88,6 +88,16 @@ Graph occasionally rejects the `$filter=conversationId eq '...'` query. The watc
 - Check the conversationId format — it should be a GUID-like string
 - Try lowering `poll_interval_seconds` to reduce request frequency
 
+### Action creation returns 400
+
+Halo rejected the action itself. The watcher logs Halo's reason as `halo_request_rejected` (the `halo_error` field), and `action_create_failed` shows the `outcome_id` it used.
+
+Common causes:
+
+- **The ticket is closed** and the Ticket Action doesn't have "can edit closed tickets" enabled in Halo.
+- **`halo.actions` names a Ticket Action that doesn't exist**, or one the agent isn't allowed to use (check the action's access control in Halo). Hidden actions work fine but don't appear in Halo's default action list.
+- The agent can't use that action on the ticket's type.
+
 ### Action creation returns 401
 
 API keys cannot create actions in Halo — the watcher posts with each user's own OAuth (PKCE) token. Verify `halo.client_id` belongs to an OAuth application (not an API key), and that the user's row in `watched_mailboxes` is `active` (see **Background sync is off for a user** above).
