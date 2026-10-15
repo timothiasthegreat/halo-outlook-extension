@@ -90,6 +90,17 @@ class HaloClient:
             )
 
             if response.status_code < 500 and response.status_code != 429:
+                if response.status_code >= 400:
+                    # Halo explains 4xx rejections (bad outcome ID, closed
+                    # ticket, missing permission...) in the body; raise_for_status
+                    # alone would throw that away.
+                    logger.warning(
+                        "halo_request_rejected",
+                        method=method,
+                        path=path,
+                        status=response.status_code,
+                        halo_error=response.text[:500],
+                    )
                 return response
 
             delay = 2**attempt

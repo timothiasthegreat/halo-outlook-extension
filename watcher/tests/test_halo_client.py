@@ -161,6 +161,24 @@ class TestHaloClientActions:
         assert len(actions) == 2
 
 
+    async def test_rejected_request_logs_halo_error_body(self, token_manager, mock_api):
+        from structlog.testing import capture_logs
+
+        mock_api.post("https://test.halopsa.com/api/Actions").respond(
+            400, text='{"ClassName":"HaloException","Message":"Invalid outcome"}'
+        )
+
+        async with HaloClient(token_manager, "test@example.com", API_URL) as client:
+            with capture_logs() as logs:
+                with pytest.raises(Exception):
+                    await client.create_action(9999, 86, "n", "<p>n</p>")
+
+        rejected = [e for e in logs if e["event"] == "halo_request_rejected"]
+        assert len(rejected) == 1
+        assert rejected[0]["status"] == 400
+        assert "Invalid outcome" in rejected[0]["halo_error"]
+
+
 @pytest.mark.asyncio
 class TestHaloClientRetry:
     async def test_retries_on_500(self, token_manager):

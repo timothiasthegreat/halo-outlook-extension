@@ -205,6 +205,7 @@ class SyncEngine:
                     "action_create_failed",
                     ticket_id=ticket_id,
                     direction=direction_label,
+                    outcome_id=outcome_id,
                     internet_message_id=internet_message_id[:50],
                 )
                 raise
