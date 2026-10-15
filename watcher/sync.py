@@ -193,7 +193,7 @@ class SyncEngine:
             direction_label = "outbound" if is_from_user else "inbound"
 
             try:
-                await halo.create_action(
+                action = await halo.create_action(
                     ticket_id=ticket_id,
                     outcome_id=outcome_id,
                     note=note,
@@ -211,7 +211,9 @@ class SyncEngine:
                 raise
 
             if msg.get("hasAttachments", False):
-                await self._sync_attachments(ticket_id, msg, watched_by, halo)
+                await self._sync_attachments(
+                    ticket_id, msg, watched_by, halo, action_id=action.get("id")
+                )
 
             await self._state.mark_synced(conversation_id, internet_message_id)
             synced_count += 1
@@ -222,12 +224,19 @@ class SyncEngine:
         return synced_count
 
     async def _sync_attachments(
-        self, ticket_id: int, msg: dict[str, Any], watched_by: str, halo: HaloClient
+        self,
+        ticket_id: int,
+        msg: dict[str, Any],
+        watched_by: str,
+        halo: HaloClient,
+        *,
+        action_id: int | None = None,
     ) -> None:
         """Download file attachments and attach them to the Halo ticket.
 
         The message's Graph id only resolves in the mailbox it was fetched
-        from, so attachments are read from watched_by's mailbox too.
+        from, so attachments are read from watched_by's mailbox too. Files
+        are linked to action_id (the email's journal entry) when given.
         """
         graph_id = msg.get("id", "")
         if not graph_id:
@@ -263,9 +272,16 @@ class SyncEngine:
                     filename=att.get("name", "attachment"),
                     content=content,
                     content_type=att.get("contentType", "application/octet-stream"),
+                    action_id=action_id,
                 )
             except Exception:
-                logger.warning("attachment_download_failed", attachment_name=att.get("name"), exc_info=True)
+                # Covers both the Graph download and the Halo upload.
+                logger.warning(
+                    "attachment_sync_failed",
+                    ticket_id=ticket_id,
+                    attachment_name=att.get("name"),
+                    exc_info=True,
+                )
 
     async def _stale_due(self) -> list[dict[str, object]]:
         """Stale conversations to poll this cycle.
