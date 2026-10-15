@@ -109,6 +109,47 @@ def _build_health_app(shared_state: dict):
         await state.track_conversation(conv_id, int(ticket_id), watched_by)
         return {"status": "ok", "conversationId": conv_id, "ticketId": ticket_id}
 
+    @app.get("/conversation")
+    async def get_conversation(conversation_id: str, watched_by: str):
+        """Look up a conversation→ticket mapping for the mailbox watching it.
+
+        404 when the conversation isn't tracked for watched_by — a mapping
+        another mailbox holds isn't reported.
+        """
+        state = shared_state.get("_state_store")
+        if state is None:
+            raise HTTPException(503, "State store not initialized")
+        row = await state.get_conversation(conversation_id)
+        if row is None or str(row.get("watched_by") or "").lower() != watched_by.strip().lower():
+            raise HTTPException(404, "Conversation is not tracked")
+        return {
+            "conversationId": row["conversation_id"],
+            "ticketId": row["ticket_id"],
+            "lastSyncAt": row["last_sync_at"],
+            "isStale": bool(row["is_stale"]),
+        }
+
+    @app.post("/untrack-conversation")
+    async def untrack_conversation(req: "dict"):
+        """Stop watching a conversation (the add-in's Unlink).
+
+        Only the mailbox watching the conversation can untrack it.
+        """
+        state = shared_state.get("_state_store")
+        if state is None:
+            raise HTTPException(503, "State store not initialized")
+        conv_id = req.get("conversationId")
+        watched_by = str(req.get("watchedBy") or "").strip().lower()
+        if not conv_id or not watched_by:
+            raise HTTPException(400, "conversationId and watchedBy required")
+        row = await state.get_conversation(conv_id)
+        if row is None:
+            raise HTTPException(404, "Conversation is not tracked")
+        if str(row.get("watched_by") or "").lower() != watched_by:
+            raise HTTPException(403, "Conversation is watched from another mailbox")
+        await state.unlink_conversation(conv_id)
+        return {"status": "ok", "conversationId": conv_id}
+
     @app.post("/register-mailbox")
     async def register_mailbox(req: "dict"):
         """Register a watched mailbox in the watcher's state.db.

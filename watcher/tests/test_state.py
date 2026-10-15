@@ -26,11 +26,28 @@ class TestStateStore:
         ticket_id = await store.get_ticket_id("nonexistent")
         assert ticket_id is None
 
-    async def test_stale_conversation_returns_none(self, store):
+    async def test_stale_conversation_stays_linked(self, store):
+        """Stale means "review it", not unlinked (brief §4.4, §8.2)."""
         await store.track_conversation("conv-001", 1234)
         await store.mark_stale("conv-001")
-        ticket_id = await store.get_ticket_id("conv-001")
-        assert ticket_id is None
+        assert await store.get_ticket_id("conv-001") == 1234
+        stale = await store.get_stale_conversations()
+        assert [c["conversation_id"] for c in stale] == ["conv-001"]
+
+    async def test_touch_sync_clears_stale(self, store):
+        await store.track_conversation("conv-001", 1234)
+        await store.mark_stale("conv-001")
+        await store.touch_sync("conv-001")
+        assert await store.get_stale_conversations() == []
+        assert len(await store.get_watched_conversations()) == 1
+
+    async def test_get_conversation(self, store):
+        await store.track_conversation("conv-001", 1234, watched_by="a@example.com")
+        row = await store.get_conversation("conv-001")
+        assert row["ticket_id"] == 1234
+        assert row["watched_by"] == "a@example.com"
+        assert row["is_stale"] == 0
+        assert await store.get_conversation("nope") is None
 
     async def test_get_watched_conversations(self, store):
         await store.track_conversation("conv-001", 100)

@@ -412,3 +412,114 @@ test("POST /api/conversations watches from the caller's mailbox, not the body's"
     fake.restore();
   }
 });
+
+test("GET /api/conversations looks up the caller's mapping in the watcher", async () => {
+  const fake = fakeUpstreams({ agentEmail: "agent@example.com" });
+  try {
+    const conv = "AAQkAD/abc+def=";
+    const { status } = await request(`/api/conversations?conversationId=${encodeURIComponent(conv)}`, {
+      headers: { Authorization: `Bearer ${nextAccessToken()}` },
+    });
+    assert.equal(status, 200);
+    assert.equal(fake.watcherCalls.length, 1);
+    assert.equal(fake.watcherCalls[0].method, "GET");
+    const url = new URL(fake.watcherCalls[0].url);
+    assert.equal(url.pathname, "/conversation");
+    assert.equal(url.searchParams.get("conversation_id"), conv);
+    assert.equal(url.searchParams.get("watched_by"), "agent@example.com");
+  } finally {
+    fake.restore();
+  }
+});
+
+test("GET /api/conversations without Authorization returns 401", async () => {
+  const fake = fakeUpstreams();
+  try {
+    const { status } = await get("/api/conversations?conversationId=conv-1");
+    assert.equal(status, 401);
+    assert.equal(fake.watcherCalls.length, 0);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("GET /api/conversations without conversationId returns 400", async () => {
+  const fake = fakeUpstreams();
+  try {
+    const { status } = await request("/api/conversations", {
+      headers: { Authorization: `Bearer ${nextAccessToken()}` },
+    });
+    assert.equal(status, 400);
+    assert.equal(fake.watcherCalls.length, 0);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("DELETE /api/conversations untracks from the caller's mailbox", async () => {
+  const fake = fakeUpstreams({ agentEmail: "agent@example.com" });
+  try {
+    const { status } = await request("/api/conversations?conversationId=conv-1", {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${nextAccessToken()}` },
+    });
+    assert.equal(status, 200);
+    assert.equal(fake.watcherCalls.length, 1);
+    assert.ok(fake.watcherCalls[0].url.endsWith("/untrack-conversation"));
+    assert.equal(fake.watcherCalls[0].method, "POST");
+    assert.deepEqual(fake.watcherCalls[0].body, {
+      conversationId: "conv-1",
+      watchedBy: "agent@example.com",
+    });
+  } finally {
+    fake.restore();
+  }
+});
+
+test("DELETE /api/conversations without Authorization returns 401", async () => {
+  const fake = fakeUpstreams();
+  try {
+    const { status } = await request("/api/conversations?conversationId=conv-1", { method: "DELETE" });
+    assert.equal(status, 401);
+    assert.equal(fake.watcherCalls.length, 0);
+  } finally {
+    fake.restore();
+  }
+});
+
+// ── Body size limit ──────────────────────────────────────────────────────
+
+test("POST /api/proxy/Actions accepts an HTML email body larger than 100kb", async () => {
+  const originalFetch = global.fetch;
+  let forwarded;
+  global.fetch = async (url, opts) => {
+    forwarded = { url: String(url), body: opts.body };
+    return {
+      ok: true,
+      status: 201,
+      headers: { get: () => "application/json" },
+      text: async () => JSON.stringify([{ id: 1 }]),
+    };
+  };
+
+  try {
+    // ~5 MB of HTML, e.g. an email with an inline base64 image
+    const noteHtml = `<p>Hi</p><img src="data:image/png;base64,${"A".repeat(5 * 1024 * 1024)}">`;
+    const payload = JSON.stringify([{ ticket_id: 1, outcome_id: 0, note_html: noteHtml }]);
+    const { status } = await request("/api/proxy/Actions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+        Authorization: "Bearer test-token",
+      },
+      body: payload,
+    });
+
+    assert.equal(status, 201);
+    assert.ok(forwarded.url.endsWith("/api/Actions"));
+    assert.equal(JSON.parse(forwarded.body)[0].note_html.length, noteHtml.length);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

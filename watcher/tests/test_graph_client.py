@@ -121,10 +121,7 @@ class TestGraphClientMessages:
 
 @pytest.mark.asyncio
 class TestGraphClientPagination:
-    async def test_paginates_multiple_pages(self, graph_config, mock_graph):
-        """Verify pagination collects messages across pages."""
-        # This is complex to mock precisely since _paginate parses nextLink.
-        # For now, test single-page path (no nextLink → returns that page).
+    async def test_single_page(self, graph_config, mock_graph):
         mock_graph.get(
             "https://graph.microsoft.com/v1.0/users/test@example.com/messages"
         ).respond(
@@ -138,6 +135,90 @@ class TestGraphClientPagination:
             messages = await client.get_messages_by_conversation("conv-test")
 
         assert len(messages) == 3
+
+    async def test_paginates_multiple_pages(self, graph_config, mock_graph):
+        """Pages 2+ follow @odata.nextLink without doubling the /v1.0 prefix."""
+        import httpx as httpx_mod
+
+        messages_url = "https://graph.microsoft.com/v1.0/users/test@example.com/messages"
+        next_link = (
+            messages_url
+            + "?%24filter=conversationId+eq+%27conv-test%27&%24top=50&%24skip=50"
+        )
+        pages = {
+            None: {
+                "value": [{"subject": f"Msg {i}"} for i in range(50)],
+                "@odata.nextLink": next_link,
+            },
+            "50": {"value": [{"subject": f"Msg {i}"} for i in range(50, 60)]},
+        }
+        requested = []
+
+        def respond(request):
+            requested.append(request.url)
+            return httpx_mod.Response(200, json=pages[request.url.params.get("$skip")])
+
+        # The old bug: page 2 went to /v1.0/v1.0/... and was dropped
+        doubled = mock_graph.get(
+            url__startswith="https://graph.microsoft.com/v1.0/v1.0/"
+        ).respond(404)
+        route = mock_graph.get(messages_url).mock(side_effect=respond)
+
+        async with GraphClient(graph_config) as client:
+            messages = await client.get_messages_by_conversation("conv-test")
+
+        assert not doubled.called
+        assert route.call_count == 2
+        assert requested[1].path == "/v1.0/users/test@example.com/messages"
+        assert requested[1].params["$skip"] == "50"
+        assert len(messages) == 60
+        assert messages[-1]["subject"] == "Msg 59"
+
+    async def test_ignores_next_link_to_other_host(self, graph_config, mock_graph):
+        """A nextLink off graph.microsoft.com/v1.0 isn't followed (the token stays home)."""
+        mock_graph.get(
+            "https://graph.microsoft.com/v1.0/users/test@example.com/messages"
+        ).respond(
+            json={
+                "value": [{"subject": "Msg 0"}],
+                "@odata.nextLink": "https://evil.example.com/v1.0/users/x/messages?$skip=1",
+            }
+        )
+        evil = mock_graph.get(url__startswith="https://evil.example.com/").respond(200)
+
+        async with GraphClient(graph_config) as client:
+            messages = await client.get_messages_by_conversation("conv-test")
+
+        assert len(messages) == 1
+        assert not evil.called
+
+
+@pytest.mark.asyncio
+class TestGraphClientAttachments:
+    async def test_attachments_use_given_mailbox(self, graph_config, mock_graph):
+        base = "https://graph.microsoft.com/v1.0/users/agent@example.com/messages/m1"
+        listing = mock_graph.get(f"{base}/attachments").respond(
+            json={"value": [{"id": "a1", "name": "x.pdf"}]}
+        )
+        content = mock_graph.get(f"{base}/attachments/a1/$value").respond(content=b"PDF")
+
+        async with GraphClient(graph_config) as client:
+            atts = await client.get_message_attachments("m1", user_email="agent@example.com")
+            data = await client.get_attachment_content("m1", "a1", user_email="agent@example.com")
+
+        assert listing.called and content.called
+        assert atts == [{"id": "a1", "name": "x.pdf"}]
+        assert data == b"PDF"
+
+    async def test_attachments_default_to_configured_mailbox(self, graph_config, mock_graph):
+        route = mock_graph.get(
+            "https://graph.microsoft.com/v1.0/users/test@example.com/messages/m1/attachments"
+        ).respond(json={"value": []})
+
+        async with GraphClient(graph_config) as client:
+            await client.get_message_attachments("m1")
+
+        assert route.called
 
 
 @pytest.mark.asyncio

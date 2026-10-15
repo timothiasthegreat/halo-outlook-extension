@@ -33,6 +33,15 @@ def make_config(stale_days: int = 14) -> Config:
     )
 
 
+async def run_sync(config, halo, graph, state):
+    """Run one sync cycle with `halo` standing in for every per-user HaloClient."""
+    halo.__aenter__.return_value = halo
+    halo.list_actions = AsyncMock(return_value=[])
+    with patch("watcher.sync.HaloClient", return_value=halo):
+        engine = SyncEngine(config, AsyncMock(), graph, state)
+        return await engine.sync_once()
+
+
 @pytest.fixture
 async def state():
     db_path = tempfile.mktemp(suffix=".db")
@@ -47,7 +56,7 @@ class TestAttachmentSync:
         halo = AsyncMock()
         graph = AsyncMock()
 
-        await state.track_conversation("conv-att", 5000)
+        await state.track_conversation("conv-att", 5000, watched_by="user@example.com")
 
         graph.get_messages_by_conversation = AsyncMock(
             return_value=[
@@ -78,8 +87,7 @@ class TestAttachmentSync:
         halo.create_action = AsyncMock(return_value={"id": 100})
         halo.attach_to_ticket = AsyncMock(return_value={"id": 200})
 
-        engine = SyncEngine(config, halo, graph, state)
-        stats = await engine.sync_once()
+        stats = await run_sync(config, halo, graph, state)
 
         assert stats["messages_synced"] == 1
         assert halo.create_action.call_count == 1
@@ -96,7 +104,7 @@ class TestAttachmentSync:
         halo = AsyncMock()
         graph = AsyncMock()
 
-        await state.track_conversation("conv-inline", 5001)
+        await state.track_conversation("conv-inline", 5001, watched_by="user@example.com")
 
         graph.get_messages_by_conversation = AsyncMock(
             return_value=[
@@ -129,8 +137,7 @@ class TestAttachmentSync:
         halo.create_action = AsyncMock(return_value={"id": 101})
         halo.attach_to_ticket = AsyncMock()
 
-        engine = SyncEngine(config, halo, graph, state)
-        stats = await engine.sync_once()
+        stats = await run_sync(config, halo, graph, state)
 
         assert stats["messages_synced"] == 1
         assert halo.attach_to_ticket.call_count == 0
@@ -140,7 +147,7 @@ class TestAttachmentSync:
         halo = AsyncMock()
         graph = AsyncMock()
 
-        await state.track_conversation("conv-big", 5002)
+        await state.track_conversation("conv-big", 5002, watched_by="user@example.com")
 
         graph.get_messages_by_conversation = AsyncMock(
             return_value=[
@@ -172,8 +179,7 @@ class TestAttachmentSync:
         halo.create_action = AsyncMock(return_value={"id": 102})
         halo.attach_to_ticket = AsyncMock()
 
-        engine = SyncEngine(config, halo, graph, state)
-        stats = await engine.sync_once()
+        stats = await run_sync(config, halo, graph, state)
 
         assert stats["messages_synced"] == 1
         assert halo.attach_to_ticket.call_count == 0
@@ -204,8 +210,11 @@ class TestStalenessDetection:
         engine = SyncEngine(config, halo, graph, state)
         await engine.sync_once()
 
-        assert await state.get_ticket_id("conv-old") is None  # stale
-        assert await state.get_ticket_id("conv-fresh") == 200  # still active
+        # Stale is "mark for review", not unlink: both stay linked
+        assert await state.get_ticket_id("conv-old") == 100
+        assert await state.get_ticket_id("conv-fresh") == 200
+        stale = [c["conversation_id"] for c in await state.get_stale_conversations()]
+        assert stale == ["conv-old"]
 
     async def test_stale_logs_emitted(self, state):
         config = make_config(stale_days=1)

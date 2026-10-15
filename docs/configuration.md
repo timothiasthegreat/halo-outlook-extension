@@ -132,7 +132,8 @@ All optional with sensible defaults.
 | Key | Default | Range | Description |
 |---|---|---|---|
 | `poll_interval_seconds` | `90` | 30–3600 | How often to check for new messages |
-| `stale_conversation_days` | `14` | 1–365 | Auto-unwatch after N days of silence |
+| `stale_conversation_days` | `14` | 1–365 | Mark a conversation stale (for review) after N days of silence. It stays linked; a new message clears the flag |
+| `stale_poll_interval_seconds` | `3600` | 60–86400 | How often stale conversations are checked for late replies |
 | `log_level` | `INFO` | DEBUG/INFO/WARNING/ERROR | Log verbosity |
 | `state_db_path` | `state.db` | any path | SQLite database location |
 

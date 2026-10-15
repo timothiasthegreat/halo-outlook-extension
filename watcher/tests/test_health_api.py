@@ -96,3 +96,104 @@ def test_mailbox_status_unregistered():
     resp = client.get("/mailbox-status", params={"email": "nobody@example.com"})
 
     assert resp.json() == {"email": "nobody@example.com", "registered": False, "token_status": None}
+
+
+# ── /conversation and /untrack-conversation ─────────────────────────────
+
+
+def _conv_row(watched_by="agent@example.com", is_stale=0):
+    return {
+        "conversation_id": "conv-1",
+        "ticket_id": 42,
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "last_sync_at": "2026-10-02T00:00:00+00:00",
+        "is_stale": is_stale,
+        "watched_by": watched_by,
+    }
+
+
+def test_get_conversation_returns_mapping_for_watching_mailbox():
+    state = MagicMock()
+    state.get_conversation = AsyncMock(return_value=_conv_row(is_stale=1))
+    client = make_client(state=state)
+
+    resp = client.get(
+        "/conversation", params={"conversation_id": "conv-1", "watched_by": "Agent@Example.com"}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "conversationId": "conv-1",
+        "ticketId": 42,
+        "lastSyncAt": "2026-10-02T00:00:00+00:00",
+        "isStale": True,
+    }
+
+
+def test_get_conversation_hides_other_mailboxes_mapping():
+    state = MagicMock()
+    state.get_conversation = AsyncMock(return_value=_conv_row(watched_by="other@example.com"))
+    client = make_client(state=state)
+
+    resp = client.get(
+        "/conversation", params={"conversation_id": "conv-1", "watched_by": "agent@example.com"}
+    )
+
+    assert resp.status_code == 404
+
+
+def test_get_conversation_untracked_returns_404():
+    state = MagicMock()
+    state.get_conversation = AsyncMock(return_value=None)
+    client = make_client(state=state)
+
+    resp = client.get(
+        "/conversation", params={"conversation_id": "nope", "watched_by": "agent@example.com"}
+    )
+
+    assert resp.status_code == 404
+
+
+def test_untrack_conversation_unlinks():
+    state = MagicMock()
+    state.get_conversation = AsyncMock(return_value=_conv_row())
+    state.unlink_conversation = AsyncMock()
+    client = make_client(state=state)
+
+    resp = client.post(
+        "/untrack-conversation",
+        json={"conversationId": "conv-1", "watchedBy": "Agent@example.com"},
+    )
+
+    assert resp.status_code == 200
+    state.unlink_conversation.assert_awaited_once_with("conv-1")
+
+
+def test_untrack_conversation_watched_by_someone_else_returns_403():
+    state = MagicMock()
+    state.get_conversation = AsyncMock(return_value=_conv_row(watched_by="other@example.com"))
+    state.unlink_conversation = AsyncMock()
+    client = make_client(state=state)
+
+    resp = client.post(
+        "/untrack-conversation",
+        json={"conversationId": "conv-1", "watchedBy": "agent@example.com"},
+    )
+
+    assert resp.status_code == 403
+    state.unlink_conversation.assert_not_awaited()
+
+
+def test_untrack_conversation_untracked_returns_404():
+    state = MagicMock()
+    state.get_conversation = AsyncMock(return_value=None)
+    state.unlink_conversation = AsyncMock()
+    client = make_client(state=state)
+
+    resp = client.post(
+        "/untrack-conversation",
+        json={"conversationId": "conv-1", "watchedBy": "agent@example.com"},
+    )
+
+    assert resp.status_code == 404
+    state.unlink_conversation.assert_not_awaited()

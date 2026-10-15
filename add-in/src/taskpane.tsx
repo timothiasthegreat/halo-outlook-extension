@@ -24,6 +24,8 @@ interface TaskpaneState {
   loading: boolean;
   error: string | null;
   lastSyncAt: string | null;
+  /** The watcher marked the conversation stale (quiet) — still watched */
+  isStale: boolean;
 
   // Conversation context
   conversationId: string;
@@ -44,6 +46,7 @@ interface TaskpaneState {
   searching: boolean;
   creating: boolean;
   linking: boolean;
+  unlinking: boolean;
 }
 
 // ── styles ─────────────────────────────────────────────────────
@@ -101,6 +104,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       loading: true,
       error: null,
       lastSyncAt: null,
+      isStale: false,
       conversationId: "",
       subject: "",
       senderEmail: "",
@@ -116,6 +120,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       searching: false,
       creating: false,
       linking: false,
+      unlinking: false,
     };
   }
 
@@ -166,16 +171,18 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       loading: true,
       error: null,
       lastSyncAt: null,
+      isStale: false,
       conversationId: "",
       subject: "",
       senderEmail: "",
       userEmail: "",
-      mode: "untracked",
+      mode: this.state.mode === "login" ? "login" : "untracked",
       searchQuery: "",
       searchResults: [],
       searching: false,
       creating: false,
       linking: false,
+      unlinking: false,
     });
     this.loadContext();
   }
@@ -260,13 +267,10 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
         return;
       }
 
-      // Check if this conversation is already tracked.
-      // The primary mechanism is the watcher's state store, but
-      // the add-in can also check via localStorage cache or a
-      // Halo API query for tickets with this conversationId.
-      //
-      // For MVP: look up in localStorage cache set by previous
-      // "Create Ticket" actions in this add-in session.
+      // Paint the cached ticket straight away, then check with the
+      // watcher's state.db — the source of truth for "tracked", so a link
+      // made on another device or an unlink elsewhere shows up — and
+      // refresh the ticket from Halo so its status is current.
       const cached = this.getCachedTicket(convId);
       if (cached) {
         this.setState({
@@ -275,12 +279,64 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
           loading: false,
           lastSyncAt: this.getCachedLastSync(convId),
         });
-        return;
       }
-
-      this.setState({ loading: false });
+      await this.refreshTracking(convId, cached);
     } catch (err: any) {
       this.setState({ error: err.message, loading: false });
+    }
+  }
+
+  /**
+   * Look the conversation up in state.db and refresh the ticket from Halo.
+   * If the server, watcher or Halo can't be reached (or we're signed out),
+   * whatever the cache showed stays on screen.
+   */
+  async refreshTracking(convId: string, cached: halo.HaloTicket | null): Promise<void> {
+    // The user may have moved to another email while we were waiting
+    const stillCurrent = () => this.state.conversationId === convId;
+
+    let tracked: halo.TrackedConversation | null;
+    try {
+      tracked = await halo.lookupConversation(convId);
+    } catch (err: any) {
+      console.warn("[loadContext] Tracking lookup failed:", err.message);
+      if (stillCurrent()) this.setState({ loading: false });
+      return;
+    }
+    if (!stillCurrent()) return;
+
+    if (!tracked) {
+      this.clearCachedTicket(convId);
+      this.setState({
+        ticket: null,
+        loading: false,
+        lastSyncAt: null,
+        isStale: false,
+        mode: this.state.mode === "tracked" ? "untracked" : this.state.mode,
+      });
+      return;
+    }
+
+    let ticket = cached && cached.id === tracked.ticketId ? cached : null;
+    try {
+      ticket = await halo.getTicket(tracked.ticketId);
+    } catch (err: any) {
+      console.warn("[loadContext] Ticket refresh failed:", err.message);
+    }
+    if (!stillCurrent()) return;
+
+    const lastSyncAt = tracked.lastSyncAt ?? this.getCachedLastSync(convId);
+    if (ticket) {
+      this.setCachedTicket(convId, ticket, lastSyncAt);
+      this.setState({
+        ticket,
+        mode: this.state.mode === "login" ? "login" : "tracked",
+        loading: false,
+        lastSyncAt,
+        isStale: tracked.isStale,
+      });
+    } else {
+      this.setState({ loading: false });
     }
   }
 
@@ -295,15 +351,23 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
     }
   }
 
-  setCachedTicket(conversationId: string, ticket: halo.HaloTicket): void {
+  setCachedTicket(
+    conversationId: string,
+    ticket: halo.HaloTicket,
+    lastSyncAt: string | null = new Date().toISOString()
+  ): void {
     localStorage.setItem(
       `halo_ticket_${conversationId}`,
       JSON.stringify(ticket)
     );
-    localStorage.setItem(
-      `halo_last_sync_${conversationId}`,
-      new Date().toISOString()
-    );
+    if (lastSyncAt) {
+      localStorage.setItem(`halo_last_sync_${conversationId}`, lastSyncAt);
+    }
+  }
+
+  clearCachedTicket(conversationId: string): void {
+    localStorage.removeItem(`halo_ticket_${conversationId}`);
+    localStorage.removeItem(`halo_last_sync_${conversationId}`);
   }
 
   getCachedLastSync(conversationId: string): string | null {
@@ -523,13 +587,52 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
     }
   };
 
+  /**
+   * Unlink everywhere: stop the watcher journaling this conversation
+   * (state.db), clear the ticket's conversationId custom field in Halo,
+   * then drop the local cache. The watcher goes first — if it can't be
+   * told, the conversation stays shown as tracked, because replies would
+   * still be journaled.
+   */
   handleUnlink = async (): Promise<void> => {
-    const { conversationId } = this.state;
+    const { conversationId, ticket } = this.state;
     if (!conversationId) return;
 
-    localStorage.removeItem(`halo_ticket_${conversationId}`);
-    localStorage.removeItem(`halo_last_sync_${conversationId}`);
-    this.setState({ ticket: null, mode: "untracked", lastSyncAt: null });
+    this.setState({ unlinking: true, error: null });
+    try {
+      await halo.untrackConversation(conversationId);
+    } catch (err: any) {
+      if (err.message?.includes("Not authenticated") || err.message?.includes("Session expired")) {
+        this.setState({ mode: "login", unlinking: false });
+      } else {
+        this.setState({
+          error: `Couldn't stop background sync for this conversation: ${err.message}`,
+          unlinking: false,
+        });
+      }
+      return;
+    }
+
+    let haloError: string | null = null;
+    if (ticket) {
+      try {
+        await halo.unlinkConversation(ticket.id);
+      } catch (err: any) {
+        haloError =
+          `Background sync stopped, but the conversation ID couldn't be cleared ` +
+          `from ticket ${ticket.ticketnumber ?? `#${ticket.id}`}: ${err.message}`;
+      }
+    }
+
+    this.clearCachedTicket(conversationId);
+    this.setState({
+      ticket: null,
+      mode: "untracked",
+      lastSyncAt: null,
+      isStale: false,
+      unlinking: false,
+      error: haloError,
+    });
   };
 
   handleLogin = (): void => {
@@ -563,6 +666,8 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       ticketTypes,
       syncStatus,
       enablingSync,
+      isStale,
+      unlinking,
     } = this.state;
 
     return (
@@ -752,6 +857,8 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
             >
               New replies in this conversation will automatically journal to
               ticket {ticket.ticketnumber ?? `#${ticket.id}`}.
+              {isStale &&
+                " It's been quiet for a while, so it's checked less often until the next reply."}
             </div>
             <button
               style={{
@@ -760,8 +867,9 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
                 borderColor: "#a80000",
               }}
               onClick={this.handleUnlink}
+              disabled={unlinking}
             >
-              Unlink
+              {unlinking ? "Unlinking…" : "Unlink"}
             </button>
           </div>
         )}

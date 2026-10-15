@@ -162,8 +162,12 @@ function validateEmail(value, field) {
 
 // ── App ──────────────────────────────────────────────────────────────────
 
+// Proxied POST /Tickets and /Actions carry whole HTML email bodies (inline
+// images included), well past express.json()'s 100kb default.
+const JSON_BODY_LIMIT = "25mb";
+
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
 // Serve add-in static files
 const staticDir = path.resolve(__dirname, "..", "add-in", "dist");
@@ -319,6 +323,45 @@ app.post("/api/conversations", requireAgent, async (req, res) => {
     watchedBy: req.agentEmail,
   }, "track-conversation");
 
+  res.status(status).json(body);
+});
+
+/**
+ * Look up whether a conversation is tracked for the caller's mailbox —
+ * proxied to the Python watcher's state.db.
+ *
+ * GET /api/conversations?conversationId=...
+ * 200 { conversationId, ticketId, lastSyncAt, isStale } or 404 if untracked.
+ * conversationId goes in the query string because it can contain "/".
+ */
+app.get("/api/conversations", requireAgent, async (req, res) => {
+  const conversationId = req.query.conversationId;
+  if (!conversationId || typeof conversationId !== "string" || conversationId.trim() === "") {
+    return res.status(400).json({ error: "conversationId query parameter is required" });
+  }
+  const route =
+    `/conversation?conversation_id=${encodeURIComponent(conversationId.trim())}` +
+    `&watched_by=${encodeURIComponent(req.agentEmail)}`;
+  const { status, body } = await forwardToWatcher(route, undefined, "conversation", "GET");
+  res.status(status).json(body);
+});
+
+/**
+ * Stop watching a conversation (the add-in's Unlink) — proxied to the
+ * Python watcher, which removes it from state.db. Only the mailbox that
+ * watches the conversation can untrack it.
+ *
+ * DELETE /api/conversations?conversationId=...
+ */
+app.delete("/api/conversations", requireAgent, async (req, res) => {
+  const conversationId = req.query.conversationId;
+  if (!conversationId || typeof conversationId !== "string" || conversationId.trim() === "") {
+    return res.status(400).json({ error: "conversationId query parameter is required" });
+  }
+  const { status, body } = await forwardToWatcher("/untrack-conversation", {
+    conversationId: conversationId.trim(),
+    watchedBy: req.agentEmail,
+  }, "untrack-conversation");
   res.status(status).json(body);
 });
 

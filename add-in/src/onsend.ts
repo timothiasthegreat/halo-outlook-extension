@@ -47,16 +47,14 @@ export async function onMessageSendHandler(): Promise<{ allowEvent: boolean }> {
       return { allowEvent: true };
     }
 
-    // TODO: Check if this conversation is tracked (requires local state or Halo API).
-    // For now, the watcher will pick up sent messages via Graph polling.
-    // The add-in side requires either:
-    //   a) A local state file (not available in browser context)
-    //   b) A Halo API call to check the custom field (expensive per-send)
-    //   c) A small config endpoint or localStorage cache of tracked conversations
-    //
-    // For Phase 3 MVP: rely on the watcher for outbound capture.
-    // The OnSend handler is wired up but primarily serves as a future
-    // enhancement for instant journaling (rather than waiting for the next poll cycle).
+    // Outbound mail is journaled by the watcher, not here. Finding the
+    // ticket is now easy (halo.lookupConversation), but journaling at send
+    // time would post every sent email twice: a compose item has no
+    // internetMessageId until Exchange assigns one on send, so the action
+    // posted here couldn't carry it, and the watcher's dedup (which matches
+    // email_message_id on the ticket's actions) would post the sent copy
+    // again on its next poll. The 2-second send timeout in launchevent.ts
+    // also leaves little room for a lookup plus a large POST /Actions.
 
     // If we could determine the ticketId, we would post the action:
     // const cfg = (await import("./config")).getConfig();

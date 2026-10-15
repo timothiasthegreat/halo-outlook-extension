@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import structlog
@@ -49,6 +50,8 @@ class SyncEngine:
         self._token_manager = token_manager
         self._graph = graph
         self._state = state
+        # monotonic time stale conversations were last polled; None → poll now
+        self._last_stale_poll: float | None = None
 
     async def sync_once(self) -> dict[str, int]:
         """Run one complete sync cycle. Creates per-user HaloClient instances."""
@@ -60,7 +63,9 @@ class SyncEngine:
         }
 
         watched = await self._state.get_watched_conversations()
-        logger.info("sync_start", watched_count=len(watched))
+        stale = await self._stale_due()
+        logger.info("sync_start", watched_count=len(watched), stale_count=len(stale))
+        watched = watched + stale
 
         for conv in watched:
             stats["conversations_checked"] += 1
@@ -205,7 +210,7 @@ class SyncEngine:
                 raise
 
             if msg.get("hasAttachments", False):
-                await self._sync_attachments(ticket_id, msg, halo)
+                await self._sync_attachments(ticket_id, msg, watched_by, halo)
 
             await self._state.mark_synced(conversation_id, internet_message_id)
             synced_count += 1
@@ -216,15 +221,21 @@ class SyncEngine:
         return synced_count
 
     async def _sync_attachments(
-        self, ticket_id: int, msg: dict[str, Any], halo: HaloClient
+        self, ticket_id: int, msg: dict[str, Any], watched_by: str, halo: HaloClient
     ) -> None:
-        """Download file attachments and attach them to the Halo ticket."""
+        """Download file attachments and attach them to the Halo ticket.
+
+        The message's Graph id only resolves in the mailbox it was fetched
+        from, so attachments are read from watched_by's mailbox too.
+        """
         graph_id = msg.get("id", "")
         if not graph_id:
             return
 
         try:
-            attachments = await self._graph.get_message_attachments(graph_id)
+            attachments = await self._graph.get_message_attachments(
+                graph_id, user_email=watched_by
+            )
         except Exception:
             logger.warning("attachment_list_failed", ticket_id=ticket_id, exc_info=True)
             return
@@ -235,7 +246,9 @@ class SyncEngine:
                 continue
 
             try:
-                content = await self._graph.get_attachment_content(graph_id, att["id"])
+                content = await self._graph.get_attachment_content(
+                    graph_id, att["id"], user_email=watched_by
+                )
                 if not content:
                     continue
 
@@ -253,8 +266,22 @@ class SyncEngine:
             except Exception:
                 logger.warning("attachment_download_failed", attachment_name=att.get("name"), exc_info=True)
 
+    async def _stale_due(self) -> list[dict[str, object]]:
+        """Stale conversations to poll this cycle.
+
+        Stale means "quiet, review it" — not unlinked — so late replies must
+        still be journaled. They are polled every stale_poll_interval_seconds
+        rather than every cycle; touch_sync clears is_stale when one arrives.
+        """
+        now = time.monotonic()
+        interval = self._config.watcher.stale_poll_interval_seconds
+        if self._last_stale_poll is not None and now - self._last_stale_poll < interval:
+            return []
+        self._last_stale_poll = now
+        return await self._state.get_stale_conversations()
+
     async def _handle_stale(self) -> None:
-        """Find and mark stale conversations."""
+        """Find and mark stale conversations (for review; they stay linked)."""
         stale_days = self._config.watcher.stale_conversation_days
         stale_convs = await self._state.find_stale_conversations(stale_days)
         for conv_id in stale_convs:

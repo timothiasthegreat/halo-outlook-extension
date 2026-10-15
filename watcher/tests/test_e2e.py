@@ -2,7 +2,7 @@
 
 import asyncio
 import tempfile
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
@@ -29,6 +29,15 @@ def make_config() -> Config:
     )
 
 
+async def run_sync(config, halo, graph, state):
+    """Run one sync cycle with `halo` standing in for every per-user HaloClient."""
+    halo.__aenter__.return_value = halo
+    halo.list_actions = AsyncMock(return_value=[])
+    with patch("watcher.sync.HaloClient", return_value=halo):
+        engine = SyncEngine(config, AsyncMock(), graph, state)
+        return await engine.sync_once()
+
+
 @pytest.fixture
 async def state():
     db_path = tempfile.mktemp(suffix=".db")
@@ -45,9 +54,9 @@ class TestEndToEnd:
         graph = AsyncMock()
 
         # Track 3 conversations
-        await state.track_conversation("conv-e2e-1", 1001)
-        await state.track_conversation("conv-e2e-2", 1002)
-        await state.track_conversation("conv-e2e-3", 1003)
+        await state.track_conversation("conv-e2e-1", 1001, watched_by="user@example.com")
+        await state.track_conversation("conv-e2e-2", 1002, watched_by="user@example.com")
+        await state.track_conversation("conv-e2e-3", 1003, watched_by="user@example.com")
 
         # Pre-sync one message in conv-1 (it should be skipped via dedup)
         await state.mark_synced("conv-e2e-1", "<conv1-already-synced@test.com>")
@@ -126,7 +135,7 @@ class TestEndToEnd:
             ],
         }
 
-        async def get_messages(conv_id: str):
+        async def get_messages(conv_id: str, user_email: str | None = None):
             return messages_map.get(conv_id, [])
 
         graph.get_messages_by_conversation = AsyncMock(side_effect=get_messages)
@@ -145,8 +154,7 @@ class TestEndToEnd:
         halo.create_action = AsyncMock(return_value={"id": 1})
         halo.attach_to_ticket = AsyncMock(return_value={"id": 200})
 
-        engine = SyncEngine(config, halo, graph, state)
-        stats = await engine.sync_once()
+        stats = await run_sync(config, halo, graph, state)
 
         # Expected:
         # conv-1: 1 already synced (skip) + 1 new = 1
@@ -184,7 +192,7 @@ class TestEndToEnd:
         halo = AsyncMock()
         graph = AsyncMock()
 
-        await state.track_conversation("conv-no-msgid", 9000)
+        await state.track_conversation("conv-no-msgid", 9000, watched_by="user@example.com")
 
         graph.get_messages_by_conversation = AsyncMock(
             return_value=[
@@ -201,8 +209,7 @@ class TestEndToEnd:
 
         halo.create_action = AsyncMock()
 
-        engine = SyncEngine(config, halo, graph, state)
-        stats = await engine.sync_once()
+        stats = await run_sync(config, halo, graph, state)
 
         assert stats["messages_synced"] == 0
         halo.create_action.assert_not_called()

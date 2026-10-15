@@ -407,6 +407,70 @@ export async function linkConversation(
 }
 
 /**
+ * Clear the conversationId custom field on a ticket (Unlink).
+ * Halo stores an empty value for "".
+ */
+export async function unlinkConversation(ticketId: number): Promise<void> {
+  const cfg = getConfig();
+  const payload = [
+    {
+      id: ticketId,
+      customfields: [
+        {
+          id: cfg.customFieldConvId,
+          value: "",
+        },
+      ],
+    },
+  ];
+  await apiRequest("POST", "/Tickets", payload);
+}
+
+// ── watcher state (via the Express server) ─────────────────────
+
+export interface TrackedConversation {
+  conversationId: string;
+  ticketId: number;
+  lastSyncAt: string | null;
+  /** Quiet for stale_conversation_days — still watched, less often */
+  isStale: boolean;
+}
+
+/**
+ * Ask the watcher's state.db (through the server) whether this conversation
+ * is tracked from the signed-in agent's mailbox. Returns null when it isn't;
+ * throws when the server or watcher can't be reached.
+ */
+export async function lookupConversation(
+  conversationId: string
+): Promise<TrackedConversation | null> {
+  const token = await getAccessToken();
+  const params = new URLSearchParams({ conversationId });
+  const resp = await fetch(`/api/conversations?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (resp.status === 404) return null;
+  if (!resp.ok) throw new Error(`Conversation lookup failed (${resp.status})`);
+  return resp.json();
+}
+
+/**
+ * Remove this conversation from the watcher's state.db so it stops
+ * journaling replies. A conversation the watcher doesn't know counts as done.
+ */
+export async function untrackConversation(conversationId: string): Promise<void> {
+  const token = await getAccessToken();
+  const params = new URLSearchParams({ conversationId });
+  const resp = await fetch(`/api/conversations?${params}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (resp.ok || resp.status === 404) return;
+  const data = await resp.json().catch(() => ({}));
+  throw new Error(data.error || data.detail || `Untrack failed (${resp.status})`);
+}
+
+/**
  * Post a ticket action (journal entry).
  * Used by both the initial create flow and OnMessageSend handler.
  */
