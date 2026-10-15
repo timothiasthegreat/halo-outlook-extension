@@ -59,7 +59,7 @@ You need **one OAuth app** for both the add-in and watcher.
    - **Grant Type:** Auth Code (PKCE) — NOT Client Credentials
    - **Scope:** `all`
    - **Redirect URI:** `https://your-server:3000/auth-complete.html`
-4. Save. Copy the **Client ID** only — no client secret is needed for PKCE.
+4. Save. Copy the **Client ID** only — no client secret is needed for PKCE. The app must issue refresh tokens: the add-in and the watcher each keep one per user.
 
 Set in `config.yaml`:
 
@@ -69,7 +69,13 @@ halo:
   # client_secret: "" — not needed
 ```
 
-Set in the add-in's manifest: update `manifest.xml` with the same OAuth app client ID.
+Nothing to set in the add-in: it reads the client ID from `config.yaml` through `GET /api/config`.
+
+---
+
+## 4. Check agent email addresses
+
+Each user's **agent email** in Halo must be the same address as their Outlook mailbox. When a user clicks **Enable background sync**, the server asks Halo (`/api/agent/me`) who they are and only lets them register that address. If the addresses differ, registration fails with a 403 that names the Halo address.
 
 ---
 
@@ -77,6 +83,7 @@ Set in the add-in's manifest: update `manifest.xml` with the same OAuth app clie
 
 - **Client credentials** always attribute to a single "Automation" agent. Multi-user orgs get confusing ticket timelines.
 - **PKCE** gives each user their own refresh token. The watcher uses that user's token when journaling their messages — actions are correctly attributed to the human.
+- **Separate tokens for the add-in and the watcher.** Each user signs in twice (once for the add-in, once for background sync), so Halo rotating one refresh token never invalidates the other.
 - **Fewer secrets to manage.** No client secret in config. No second OAuth app. One app, one client ID.
 
 ---
@@ -107,3 +114,5 @@ Expected:
 | Custom field filtering | NOT supported via API — watcher uses local state.db |
 | Actions require OAuth | API keys can't create actions (401) — OAuth required |
 | OAuth apps are agent-bound | PKCE per-user tokens give correct attribution per agent |
+| `email_message_id` on actions | The add-in and watcher store each email's `internetMessageId` here. Before posting, the watcher checks the ticket's existing actions for it, so an email is never journaled twice |
+| Refresh token errors | HTTP 400/401 from `/auth/token` means the token was rejected (the watcher marks it expired). 429/5xx are treated as temporary and retried |

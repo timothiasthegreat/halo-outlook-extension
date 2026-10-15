@@ -74,10 +74,12 @@ Then use a manifest with `https://localhost:3000` URLs.
 When a user first opens the add-in:
 
 1. The add-in loads tenant config from `GET /api/config` (no rebuild needed)
-2. If no Halo token exists, it shows "Sign in to Halo" — launches the PKCE auth flow
-3. After authenticating, the user clicks **Save & Start Watching**
-4. Their refresh token is encrypted and stored in `state.db`
-5. The watcher begins syncing their conversations automatically
+2. If no Halo token exists, it shows **Sign in to Halo**, which launches the PKCE auth flow
+3. After sign-in, the add-in asks the server (`GET /api/register/status`) whether the watcher has a usable token for this mailbox. If not, it shows a yellow **Enable background sync** prompt
+4. Clicking it runs a second Halo sign-in. That refresh token goes only to the watcher: the server checks the user's Halo access token and only accepts their own email, and the watcher confirms the refresh token belongs to that agent before encrypting it into `state.db`
+5. The watcher syncs every conversation the user links from then on
+
+The user's Halo agent email must match their Outlook mailbox address, or step 4 is refused with a 403. The prompt comes back whenever the watcher loses the token — Halo revoked it, or the state volume was wiped.
 
 ---
 
@@ -89,4 +91,6 @@ When a user first opens the add-in:
 | Config not loading | Verify `GET /api/config` returns JSON. Check `docker compose logs halo-outlook`. |
 | "Enable background sync" fails | Check `POST /api/register` is reachable from the add-in's origin. A 403 means the Halo agent's email doesn't match the Outlook mailbox address; fix the agent's email in Halo. |
 | Add-in doesn't appear after upload | Wait up to 15 minutes. If still missing, check admin center deployment status. |
-| Authentication fails | Verify the Halo OAuth app client ID in `config.yaml` matches the one in the manifest's HaloPSA setup. Same client ID, same scope (`all`), same grant type (PKCE). |
+| Authentication fails | Verify `halo.client_id` in `config.yaml` is the Halo OAuth app's client ID (the add-in reads it from `/api/config`), the app uses the PKCE grant with scope `all`, and its redirect URI is `https://your-domain.com/auth-complete.html`. |
+| "Background sync is off" keeps coming back | Halo rejected the watcher's token (HTTP 400/401 in the watcher logs as `token_refresh_failed`). Click **Enable background sync** again. Temporary Halo errors (429/5xx) don't cause this — they're retried. |
+| Linked conversation shows as "not linked" | Tracking is per mailbox: the banner shows for the user who linked it, on any device. If it's missing for that user too, the watcher couldn't be reached or the conversation was unlinked — check `docker compose logs halo-outlook`. |

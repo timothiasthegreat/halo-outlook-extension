@@ -55,7 +55,7 @@ they're trackable, searchable, and auditable — the same as support tickets.
 └──────────┘     │                      │     └──────────┘
                  │ /api/config          │           ▲
 ┌──────────┐     │ /api/register        │           │
-│ Exchange  │────▶│ /api/conversations  │───────────┘
+│ Exchange  │────▶│ /api/conversations   │───────────┘
 │ (Graph)   │     │                      │
 └──────────┘     │ Watcher Service      │
                  │ (Python daemon)      │
@@ -69,20 +69,23 @@ they're trackable, searchable, and auditable — the same as support tickets.
                   └─────────────┘
 ```
 
-1. **User opens the add-in** in the reading pane → "Create Ticket" or "Link to
-   Ticket" based on whether the conversation is already tracked.
-2. **First-time setup** → user authenticates via a popup OAuth dialog (PKCE).
-   Their refresh token is encrypted and stored in `state.db`.
+1. **User opens the add-in** in the reading pane → it asks the watcher whether
+   this conversation is tracked and shows either the ticket banner or "Create
+   Ticket" / "Link to Ticket". This works from any device the user signs in on.
+2. **First-time setup** → the user signs in to Halo (PKCE popup), then clicks
+   **Enable background sync**, a second one-time sign-in whose refresh token is
+   encrypted and stored in `state.db` for the watcher.
 3. **Watcher polls Microsoft Graph** every 90 seconds → fetches new messages for
-   every watched conversation, per-user mailbox.
-4. **Dedup & direction** → skips already-synced messages, determines inbound vs.
-   outbound, and posts ticket actions attributed to the correct user.
+   every watched conversation from the watching user's mailbox.
+4. **Dedup & direction** → skips messages already recorded in `state.db` or
+   already journaled on the ticket in Halo, determines inbound vs. outbound, and
+   posts ticket actions attributed to the correct user.
 
 ### Multi-User by Design
 
-Every user authenticates independently via the add-in's PKCE flow. Their refresh
-token is encrypted at rest (Fernet) and used by the watcher when journaling
-messages from **their** mailbox. Ticket actions are correctly attributed to the
+Every user authenticates independently via the add-in's PKCE flow. The watcher
+holds its own refresh token for each user, encrypted at rest (Fernet), and uses
+it when journaling messages from **their** mailbox. Ticket actions are correctly attributed to the
 human who owns the conversation — not a service account.
 
 **No shared mailbox. No client secret for Halo.** Each user keeps their own
@@ -92,18 +95,28 @@ email identity, and the watcher uses their individual token.
 
 The add-in uses a pure browser-based PKCE authorization code flow:
 
-1. User clicks "Sign in" → Office dialog opens to `halo_url/auth/authorize`
+1. User clicks "Sign in to Halo" → Office dialog opens to
+   `halo_url/auth/authorize`
 2. User logs in and authorizes the app
 3. Halo redirects to `auth-complete.html` with the authorization code
 4. The add-in exchanges the code for an access + refresh token at
-   `halo_url/auth/token`
-5. The refresh token is stored in localStorage (for add-in API calls) **and**
-   forwarded to the watcher's `/api/register` endpoint (for background
-   journaling)
-6. The watcher encrypts the refresh token with Fernet and stores it in `state.db`
+   `halo_url/auth/token` and keeps them in localStorage for its own API calls
 
-The watcher later decrypts the token, exchanges it for access tokens via
-`refresh_token` grant, and handles token rotation automatically.
+**Background sync uses a separate token.** When the user clicks **Enable
+background sync**, the add-in runs the same flow a second time. That refresh
+token is never stored in the add-in — it goes straight to `/api/register`,
+along with the user's add-in access token:
+
+1. The server asks Halo (`/api/agent/me`) who the access token belongs to and
+   only accepts the user's own email address
+2. The watcher exchanges the refresh token, checks with Halo that it belongs
+   to that same agent, and stores it Fernet-encrypted in `state.db`
+
+Keeping the two token families apart means Halo rotating one never invalidates
+the other. The watcher refreshes and rotates its token on its own. It only
+marks a token expired when Halo rejects it (HTTP 400/401) — outages and rate
+limits are retried — and the add-in shows the **Enable background sync**
+prompt again whenever the watcher has no usable token.
 
 ---
 
@@ -119,6 +132,7 @@ The watcher later decrypts the token, exchanges it for access tokens via
 | **Ticket Action IDs** (email_received, email_sent) | Correct journal action types | Run `scripts/setup_check.py --discover-actions` |
 | **Azure AD App Registration** + `Mail.Read` application permission | Watcher polls Graph for messages | Azure Portal → App Registrations |
 | **Exchange Online licensed mailboxes** | Graph needs real mailboxes to query | Each user needs a license |
+| **Matching agent emails** | Background sync registration | Each user's Halo agent email must match their Outlook mailbox address |
 | **Docker** (or Python 3.11 + Node.js 18 bare metal) | Runs the combined container | [Docker Desktop](https://www.docker.com/products/docker-desktop/) |
 
 ### Pre-Flight Checklist
@@ -248,8 +262,9 @@ your actual Halo instance URL:
 5. The task pane updates to show the ticket reference, status, assigned agent,
    and a clickable **"Open in Halo ↗"** link
 
-The add-in automatically registers your mailbox with the watcher and tracks the
-conversation — no separate setup step needed.
+The add-in journals the original email and hands the conversation to the
+watcher. If background sync isn't on for your mailbox yet, a yellow prompt asks
+you to click **Enable background sync** once.
 
 ### Linking to an Existing Ticket
 
@@ -266,14 +281,19 @@ conversation — no separate setup step needed.
 - **The customer replies** → posted as an email-received action.
 - **Attachments on replies** → downloaded and attached to the ticket (up to 10
   MB per file).
-- **Conversation goes quiet for 14 days** → marked stale (configurable via
-  `watcher.stale_conversation_days`). The mapping is kept but syncing pauses.
+- **Conversation goes quiet for 14 days** → marked stale for review
+  (configurable via `watcher.stale_conversation_days`). It stays linked and is
+  checked hourly (`watcher.stale_poll_interval_seconds`); the next reply is
+  journaled and clears the flag.
+- **Open the conversation on another device** → the banner still shows the
+  linked ticket, with its current status from Halo.
 
 ### Stopping Tracking
 
-Click the **"Unlink"** button in the task pane to remove the conversation→ticket
-mapping from `state.db`. This doesn't delete the ticket — it just stops
-automatic journaling for that conversation.
+Click the **"Unlink"** button in the task pane. The watcher stops journaling
+the conversation (its mapping is removed from `state.db`), and the
+conversation ID is cleared from the ticket in Halo. The ticket itself isn't
+deleted. Only the mailbox that watches a conversation can unlink it.
 
 ---
 
@@ -296,7 +316,8 @@ Full reference: [docs/configuration.md](docs/configuration.md)
 | `graph.client_secret` | **Yes** | — | App registration client secret |
 | `graph.user_email` | No | `""` | Default mailbox (leave blank — users self-register) |
 | `watcher.poll_interval_seconds` | No | `90` | How often to check for new messages |
-| `watcher.stale_conversation_days` | No | `14` | Auto-mark stale after N days of silence |
+| `watcher.stale_conversation_days` | No | `14` | Mark stale (for review) after N days of silence; it stays linked |
+| `watcher.stale_poll_interval_seconds` | No | `3600` | How often stale conversations are checked for late replies |
 | `watcher.log_level` | No | `INFO` | `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
 | `watcher.state_db_path` | No | `state.db` | SQLite database location |
 
@@ -342,21 +363,23 @@ docker logs -f halo-outlook-extension
 |---|---|---|
 | **"Link to Halo" button doesn't appear in Outlook** | Manifest not deployed, or `@source_location@` wasn't replaced | Re-upload manifest with correct URL, wait 5 min |
 | **Add-in shows "Not authenticated" loop** | Halo OAuth app misconfigured, wrong client ID, or redirect URI mismatch | Verify client ID in `halo.client_id` matches the OAuth app |
-| **Watcher logs show "token_refresh_failed"** | User's refresh token expired or was revoked | User re-authenticates in the add-in (re-registers mailbox) |
+| **Watcher logs show "token_refresh_failed"** | HTTP 400/401: Halo rejected the user's watcher token. HTTP 429/5xx: Halo was briefly unavailable | For 400/401 the token is marked expired and the add-in shows **Enable background sync** — the user clicks it. For 429/5xx nothing to do; the watcher retries next cycle |
+| **"Enable background sync" fails with 403** | The user's Halo agent email doesn't match their Outlook mailbox address | Fix the agent's email in Halo, then try again |
 | **"Graph connection failed" in startup logs** | Graph credentials wrong or consent missing | Run `scripts/setup_check.py`, verify admin consent granted |
-| **Messages not journaling** | Conversation not in `state.db`, or watcher not running | `curl localhost:8888/health` to verify watcher is alive; check `state.db` for conversation records |
+| **Messages not journaling** | Conversation not in `state.db`, the user's watcher token is expired, or the watcher isn't running | `docker exec halo-outlook-extension curl -s localhost:8888/health` to verify the watcher is alive; check `state.db` for the conversation and the mailbox's `token_status` |
 
 ### Manual state.db inspection
 
 ```bash
-# Inside the container
-docker exec -it halo-outlook-extension sqlite3 /app/state/state.db
+# The image has no sqlite3 CLI — copy the database out and open it locally
+docker cp halo-outlook-extension:/app/state/state.db ./state-copy.db
+sqlite3 ./state-copy.db
 
 # Check registered mailboxes
 SELECT email, token_status, last_token_refresh_at FROM watched_mailboxes;
 
-# Check tracked conversations
-SELECT conversation_id, ticket_id, watched_by, last_sync_at FROM conversations WHERE is_stale = 0;
+# Check tracked conversations (stale ones are still watched, just less often)
+SELECT conversation_id, ticket_id, watched_by, last_sync_at, is_stale FROM conversations;
 ```
 
 ---
@@ -394,9 +417,9 @@ SELECT conversation_id, ticket_id, watched_by, last_sync_at FROM conversations W
 
 | Component | Language | Role |
 |---|---|---|
-| **Express Server** | Node.js 18 | Serves add-in static files + API endpoints. Proxies state.db writes to the watcher's FastAPI server (port 8888) to avoid multi-process SQLite corruption. |
+| **Express Server** | Node.js 18 | Serves add-in static files + API endpoints. Checks the caller's Halo access token on every endpoint that touches watcher state, then forwards to the watcher's internal FastAPI server (port 8888) so only one process writes `state.db`. |
 | **Outlook Add-in** | TypeScript + React | Task pane UI: create/link tickets, auth dialog, ticket banner. Uses Office.js APIs for conversation context. |
-| **Watcher Service** | Python 3.11 | Polls Graph API for new messages. Creates per-user `HaloClient` instances for correct action attribution. Journals attachments. Manages PKCE token lifecycle. |
+| **Watcher Service** | Python 3.11 | Polls Graph API for new messages. Creates per-user `HaloClient` instances for correct action attribution. Journals attachments from the watching user's mailbox. Manages PKCE token lifecycle and verifies new tokens with Halo before storing them. |
 | **state.db** | SQLite (WAL) | Tracks conversation→ticket mappings, synced message dedup, and encrypted per-user refresh tokens. |
 | **Docker Entrypoint** | Bash | Generates Fernet key on first run, starts Express in background, runs watcher in foreground. |
 
@@ -421,7 +444,8 @@ SELECT conversation_id, ticket_id, watched_by, last_sync_at FROM conversations W
 # Python watcher tests
 cd watcher && pip install -e ".[dev]" && pytest -v
 
-# Node.js server tests
+# Node.js server tests (read config.yaml from the repo root)
+cp -n config.example.yaml config.yaml
 cd server && npm install && npm test
 
 # TypeScript add-in build

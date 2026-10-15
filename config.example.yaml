@@ -10,8 +10,8 @@ halo:
   # From Configuration → Integrations → Halo API → OAuth Application
   client_id: ""
 
-  # OAuth2 client secret — NOT required for PKCE auth (the add-in handles auth)
-  # Leave empty unless you're using client credentials (deprecated path)
+  # OAuth2 client secret — not used. The add-in and watcher both use per-user
+  # PKCE tokens; leave this empty.
   client_secret: ""
 
   # Ticket action IDs — discover these from your Halo instance
