@@ -15,7 +15,6 @@ import * as ReactDOM from "react-dom";
 import Banner from "./banner";
 import * as halo from "./halo";
 import { loadConfig, getConfig } from "./config";
-import { Setup } from "./setup";
 
 // ── state ──────────────────────────────────────────────────────
 
@@ -33,7 +32,10 @@ interface TaskpaneState {
   userEmail: string;
 
   // UI state
-  mode: "untracked" | "tracked" | "link" | "login" | "setup";
+  mode: "untracked" | "tracked" | "link" | "login";
+  /** Whether the watcher holds a usable token for this mailbox */
+  syncStatus: "unknown" | "active" | "off";
+  enablingSync: boolean;
   ticketTypeId: number;
   ticketTypes: Array<{ id: number; name: string }>;
   ticketTypesLoading: boolean;
@@ -104,6 +106,8 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       senderEmail: "",
       userEmail: "",
       mode: "untracked",
+      syncStatus: "unknown",
+      enablingSync: false,
       ticketTypeId: getConfig().defaultTicketTypeId,
       ticketTypes: [],
       ticketTypesLoading: false,
@@ -132,7 +136,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       })
       .then(() => this.loadContext())
       .then(() => this.checkAuth())
-      .then(() => this.ensureRegistered())
+      .then(() => this.checkSyncStatus())
       .then(() => this.fetchTicketTypes())
       .catch((err) => this.setState({ error: err.message, loading: false }));
   }
@@ -307,64 +311,80 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
   }
 
   /**
-   * Register the user's mailbox with the watcher so future replies
-   * in this conversation are picked up by Graph polling.
-   * Uses the refresh token from the OAuth flow. Non-blocking — failure
-   * is silent (the watcher picks up missed messages on its next poll).
+   * Ask the server whether the watcher holds a usable token for this
+   * user's mailbox. Checked on every load, so a wiped volume or a token
+   * Halo revoked shows the "Enable background sync" prompt again.
+   * Failures leave the status "unknown" (no prompt).
    */
-  async registerMailbox(email: string): Promise<void> {
-      if (!email) return;
-      try {
-        const tokenRaw = localStorage.getItem("halo_outlook_token");
-        if (!tokenRaw) {
-          console.warn("[registerMailbox] No token in localStorage");
-          return;
-        }
-        const tokenData = JSON.parse(tokenRaw);
-
-        // Use refresh_token if available, otherwise pass the access_token
-        // (the watcher can use it for initial Graph auth, then refresh on its own)
-        const refreshToken = tokenData?.refresh_token || tokenData?.access_token;
-        if (!refreshToken) {
-          console.warn("[registerMailbox] No token available to register");
-          return;
-        }
-
-        const resp = await fetch("/api/register", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            email,
-            refresh_token: refreshToken,
-          }),
-        });
-        if (!resp.ok) {
-          console.warn(`[registerMailbox] Registration failed: ${resp.status}`);
-        } else {
-          console.log(`[registerMailbox] Registered ${email} successfully`);
-        }
-      } catch (err: any) {
-        console.warn("[registerMailbox] Error:", err.message);
+  async checkSyncStatus(): Promise<void> {
+    if (this.state.mode === "login") return;
+    try {
+      const token = await halo.getAccessToken();
+      const resp = await fetch("/api/register/status", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!resp.ok) {
+        console.warn(`[checkSyncStatus] Status check failed: ${resp.status}`);
+        return;
       }
+      const data = await resp.json();
+      const active = data.registered && data.token_status === "active";
+      this.setState({ syncStatus: active ? "active" : "off" });
+    } catch (err: any) {
+      console.warn("[checkSyncStatus] Error:", err.message);
     }
+  }
+
+  /**
+   * Give the watcher its own Halo token for this mailbox. Runs a separate
+   * Halo sign-in whose refresh token goes straight to the server; the
+   * add-in's own token is never shared.
+   */
+  handleEnableSync = async (): Promise<void> => {
+    const { userEmail } = this.state;
+    if (!userEmail) {
+      this.setState({ error: "Could not determine your mailbox address" });
+      return;
+    }
+    this.setState({ enablingSync: true, error: null });
+    try {
+      const refreshToken = await halo.authorizeWatcherToken();
+      const accessToken = await halo.getAccessToken();
+      const resp = await fetch("/api/register", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ email: userEmail, refresh_token: refreshToken }),
+      });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.error || data.detail || `Registration failed (${resp.status})`);
+      }
+      this.setState({ syncStatus: "active", enablingSync: false });
+    } catch (err: any) {
+      this.setState({ error: err.message, enablingSync: false });
+    }
+  };
 
   /**
    * Register this conversation in the watcher's state.db so the sync engine
    * picks it up. Non-blocking — failure is silent (the add-in still shows
    * the ticket as linked via localStorage, and the watcher retries on its
-   * next poll cycle).
+   * next poll cycle). The server watches it from the caller's own mailbox.
    */
   async trackConversation(conversationId: string, ticketId: number): Promise<void> {
       if (!conversationId || !ticketId) return;
       try {
+        const token = await halo.getAccessToken();
         const resp = await fetch("/api/conversations", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            conversationId,
-            ticketId,
-            watchedBy: this.state.userEmail || undefined,
-          }),
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ conversationId, ticketId }),
         });
         if (!resp.ok) {
           console.warn(`[trackConversation] Failed: ${resp.status}`);
@@ -379,7 +399,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
   // ── actions ─────────────────────────────────────────────────
 
   handleCreateTicket = async (): Promise<void> => {
-    const { conversationId, subject, senderEmail, userEmail, ticketTypeId } = this.state;
+    const { conversationId, subject, senderEmail, ticketTypeId } = this.state;
     if (!conversationId) {
       this.setState({ error: "No conversation selected" });
       return;
@@ -418,17 +438,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
         lastSyncAt: new Date().toISOString(),
       });
 
-      // Register the user's mailbox with the watcher so future replies
-      // are picked up by the Graph polling loop. Uses the refresh token
-      // from the OAuth flow stored in localStorage.
-      this.registerMailbox(userEmail);
-
-      // Track the conversation in the watcher's state.db so the sync
-      // engine knows which conversations to poll. This is the same
-      // three-write pattern as handleLinkTicket.
-      this.trackConversation(conversationId, fullTicket.id);
-
-      // Also journal the initial email as an action
+      // Journal the initial email as an action
       const internetMessageId = await halo.getCurrentInternetMessageId();
       if (internetMessageId) {
         try {
@@ -443,6 +453,11 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
           // Journal failure is non-fatal — the watcher will pick it up
         }
       }
+
+      // Only now hand the conversation to the watcher: it skips messages
+      // already journaled on the ticket, so the initial email posted above
+      // isn't journaled a second time.
+      await this.trackConversation(conversationId, fullTicket.id);
     } catch (err: any) {
       // If auth error, switch to login mode so user can sign in
       if (err.message?.includes("Not authenticated") || err.message?.includes("Session expired")) {
@@ -477,7 +492,7 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
   };
 
   handleLinkTicket = async (ticketId: number): Promise<void> => {
-    const { conversationId, subject, userEmail } = this.state;
+    const { conversationId } = this.state;
     if (!conversationId) {
       this.setState({ error: "No conversation selected" });
       return;
@@ -495,11 +510,6 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
         linking: false,
         lastSyncAt: new Date().toISOString(),
       });
-
-      // Register the user's mailbox with the watcher so future replies
-      // are picked up by the Graph polling loop. Uses the refresh token
-      // from the OAuth flow stored in localStorage.
-      this.registerMailbox(userEmail);
 
       // Track the conversation in the watcher's state.db so the sync
       // engine knows which conversations to poll.
@@ -528,32 +538,12 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
         .then(() => {
           this.setState({ mode: "untracked", error: null });
           this.loadContext().then(() => {
-            this.ensureRegistered();
+            this.checkSyncStatus();
             this.fetchTicketTypes();
           });
         })
         .catch((err) => this.setState({ error: err.message }));
     };
-
-  /**
-   * Ensure the authenticated user's mailbox is registered with the watcher.
-   *
-   * The watcher's state.db is separate from ticket linking — it needs a
-   * registered mailbox to decrypt tokens and post actions. This silently
-   * re-registers on every add-in load so that volume wipes and container
-   * restarts don't leave the watcher with an empty token store.
-   *
-   * Safe to call anytime — registerMailbox is an idempotent upsert.
-   */
-  async ensureRegistered(): Promise<void> {
-    const { userEmail, mode } = this.state;
-    // Only register when authenticated and the user email is known
-    if (mode === "login" || !userEmail) return;
-    // Don't bother if we already registered this session
-    if (localStorage.getItem("halo_watcher_registered") === userEmail) return;
-    await this.registerMailbox(userEmail);
-    localStorage.setItem("halo_watcher_registered", userEmail);
-  }
 
   // ── render ──────────────────────────────────────────────────
 
@@ -571,6 +561,8 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
       subject,
       ticketTypeId,
       ticketTypes,
+      syncStatus,
+      enablingSync,
     } = this.state;
 
     return (
@@ -622,6 +614,31 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
             >
               Dismiss
             </button>
+          </div>
+        )}
+
+        {/* ── Background sync prompt ── */}
+        {syncStatus === "off" && mode !== "login" && (
+          <div
+            style={{
+              background: "#fff4ce",
+              padding: "8px",
+              borderRadius: "4px",
+              marginBottom: "12px",
+              fontSize: "12px",
+            }}
+          >
+            Background sync is off for your mailbox, so replies won't be
+            journaled while Outlook is closed.
+            <div style={{ marginTop: "6px" }}>
+              <button
+                style={secondaryButtonStyle}
+                onClick={this.handleEnableSync}
+                disabled={enablingSync}
+              >
+                {enablingSync ? "Enabling…" : "Enable background sync"}
+              </button>
+            </div>
           </div>
         )}
 
@@ -761,18 +778,6 @@ class Taskpane extends React.Component<{}, TaskpaneState> {
                   </div>
                 )}
 
-                {/* ── Setup prompt ── */}
-                {mode === "setup" && (
-                  <Setup
-                    email={this.state.senderEmail}
-                    refreshToken=""
-                    onRegistered={() => {
-                      localStorage.setItem("halo_watcher_registered", "true");
-                      this.setState({ mode: "untracked" });
-                    }}
-                    onSkip={() => this.setState({ mode: "untracked" })}
-                  />
-                )}
       </div>
     );
   }

@@ -146,3 +146,99 @@ class TestTokenManagerRefresh:
             from watcher.crypto import decrypt_token
             decrypted = decrypt_token(row["refresh_token_enc"], fernet_key)
             assert decrypted == "new-rt-from-halo"
+
+@pytest.mark.asyncio
+class TestTokenManagerTransientFailures:
+    async def test_server_error_keeps_token_active(self, fernet_key, state):
+        from watcher.token_manager import TokenRefreshError
+
+        tm = make_token_manager(fernet_key, state)
+        await tm.register_user("user@example.com", "rt-abc")
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_token_response(status=503)
+
+            with pytest.raises(TokenRefreshError):
+                await tm.get_token_for("user@example.com")
+
+        row = await state.get_mailbox("user@example.com")
+        assert row["token_status"] == "active"
+
+    async def test_rate_limit_keeps_token_active(self, fernet_key, state):
+        from watcher.token_manager import TokenRefreshError
+
+        tm = make_token_manager(fernet_key, state)
+        await tm.register_user("user@example.com", "rt-abc")
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_token_response(status=429)
+
+            with pytest.raises(TokenRefreshError):
+                await tm.get_token_for("user@example.com")
+
+        row = await state.get_mailbox("user@example.com")
+        assert row["token_status"] == "active"
+
+
+def mock_agent_response(email, status=200):
+    from unittest.mock import MagicMock
+
+    resp = MagicMock()
+    resp.status_code = status
+    resp.json = MagicMock(return_value={"id": 5, "email": email})
+    return resp
+
+
+@pytest.mark.asyncio
+class TestTokenManagerVerifiedRegistration:
+    async def test_register_verified_stores_rotated_token(self, fernet_key, state):
+        from watcher.crypto import decrypt_token
+
+        tm = make_token_manager(fernet_key, state)
+        with (
+            patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post,
+            patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get,
+        ):
+            mock_post.return_value = mock_token_response(refresh_token="rotated-rt")
+            mock_get.return_value = mock_agent_response("User@Example.com")
+
+            await tm.register_verified("user@example.com", "rt-from-addin")
+
+        row = await state.get_mailbox("user@example.com")
+        assert row["token_status"] == "active"
+        assert decrypt_token(row["refresh_token_enc"], fernet_key) == "rotated-rt"
+        assert mock_get.call_args.args[0] == "https://test.halopsa.com/api/agent/me"
+
+    async def test_register_verified_rejects_other_agents_token(self, fernet_key, state):
+        from watcher.token_manager import RegistrationMismatchError
+
+        tm = make_token_manager(fernet_key, state)
+        with (
+            patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post,
+            patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get,
+        ):
+            mock_post.return_value = mock_token_response()
+            mock_get.return_value = mock_agent_response("attacker@example.com")
+
+            with pytest.raises(RegistrationMismatchError):
+                await tm.register_verified("victim@example.com", "attacker-rt")
+
+        assert await state.get_mailbox("victim@example.com") is None
+
+    async def test_register_verified_rejected_token_stores_nothing(self, fernet_key, state):
+        from watcher.token_manager import TokenRevokedError
+
+        tm = make_token_manager(fernet_key, state)
+        await tm.register_user("victim@example.com", "victims-real-rt")
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_token_response(status=400)
+
+            with pytest.raises(TokenRevokedError):
+                await tm.register_verified("victim@example.com", "A" * 40)
+
+        from watcher.crypto import decrypt_token
+
+        row = await state.get_mailbox("victim@example.com")
+        assert decrypt_token(row["refresh_token_enc"], fernet_key) == "victims-real-rt"
+        assert row["token_status"] == "active"

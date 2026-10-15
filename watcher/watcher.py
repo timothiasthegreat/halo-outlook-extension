@@ -72,9 +72,15 @@ def _build_health_app(shared_state: dict):
     connection the watcher holds.  This avoids the sql.js ↔ aiosqlite
     WAL corruption that happens when two processes write the same file.
     """
+    import httpx
     from fastapi import FastAPI, HTTPException
     from fastapi.responses import JSONResponse
-    from watcher.crypto import get_fernet
+
+    from watcher.token_manager import (
+        RegistrationMismatchError,
+        TokenRefreshError,
+        TokenRevokedError,
+    )
 
     app = FastAPI(title="Halo Outlook Watcher — API")
 
@@ -105,30 +111,47 @@ def _build_health_app(shared_state: dict):
 
     @app.post("/register-mailbox")
     async def register_mailbox(req: "dict"):
-        """Register a watched mailbox in the watcher's state.db."""
-        state = shared_state.get("_state_store")
-        if state is None:
-            raise HTTPException(503, "State store not initialized")
+        """Register a watched mailbox in the watcher's state.db.
+
+        The refresh token must belong to the Halo agent with this email —
+        TokenManager.register_verified() checks that with Halo before
+        anything is stored, so a caller cannot overwrite another user's token.
+        """
+        token_manager = shared_state.get("_token_manager")
+        if token_manager is None:
+            raise HTTPException(503, "Token manager not initialized")
 
         email = req.get("email", "").strip().lower()
         refresh_token = req.get("refresh_token", "")
-        additional = req.get("additional_emails") or []
 
         if not email or "@" not in email:
             raise HTTPException(400, "Valid email required")
         if not refresh_token:
             raise HTTPException(400, "refresh_token required")
 
-        fernet_k = get_fernet()
-        # fernet_k.encrypt returns bytes; we need a string for the DB
-        raw_bytes = fernet_k.encrypt(refresh_token.encode())
-        enc_token = raw_bytes.decode() if isinstance(raw_bytes, bytes) else raw_bytes
+        try:
+            await token_manager.register_verified(email, refresh_token)
+        except RegistrationMismatchError as e:
+            raise HTTPException(403, str(e))
+        except TokenRevokedError:
+            raise HTTPException(400, "Halo rejected the refresh token")
+        except (TokenRefreshError, httpx.HTTPError) as e:
+            raise HTTPException(502, f"Could not verify token with Halo: {e}")
 
-        watching = [email] + [a.strip().lower() for a in additional if a.strip()]
-        for mailbox in watching:
-            await state.register_mailbox(mailbox, enc_token)
+        return {"status": "ok", "email": email, "watching": [email]}
 
-        return {"status": "ok", "email": email, "watching": watching}
+    @app.get("/mailbox-status")
+    async def mailbox_status(email: str):
+        """Report whether a mailbox is registered and its token is usable."""
+        state = shared_state.get("_state_store")
+        if state is None:
+            raise HTTPException(503, "State store not initialized")
+        row = await state.get_mailbox(email.strip().lower())
+        return {
+            "email": email,
+            "registered": row is not None,
+            "token_status": row["token_status"] if row else None,
+        }
 
     return app
 
@@ -175,6 +198,7 @@ async def run_daemon(config_path: str, health_port: int = HEALTH_PORT) -> None:
         fernet_key_str = os.environ["FERNET_KEY"]
         halo_config_dict = config.halo.model_dump()
         token_manager = TokenManager(halo_config_dict, state, fernet_key_str)
+        shared_state["_token_manager"] = token_manager
         engine = SyncEngine(config, token_manager, graph, state)
 
         await _run_health_server(shared_state, health_port)

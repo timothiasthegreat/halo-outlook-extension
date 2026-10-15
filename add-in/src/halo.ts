@@ -109,6 +109,30 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
  *   5. We receive the code, exchange it for a token, and store it
  */
 async function authorizeViaDialog(): Promise<string> {
+  const tokenData = await runPkceDialog();
+  storeToken(tokenData);
+  return tokenData.access_token;
+}
+
+/**
+ * Run a separate authorization whose refresh token is handed to the
+ * watcher and never stored in the add-in. The add-in and the watcher each
+ * refresh their own token family, so Halo rotating one never invalidates
+ * the other.
+ */
+export async function authorizeWatcherToken(): Promise<string> {
+  const tokenData = await runPkceDialog();
+  if (!tokenData.refresh_token) {
+    throw new Error("Halo did not issue a refresh token — background sync can't be enabled");
+  }
+  return tokenData.refresh_token;
+}
+
+/**
+ * Run the PKCE auth code flow in an Office dialog and exchange the code.
+ * Returns the tokens without storing them.
+ */
+async function runPkceDialog(): Promise<TokenData> {
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = await generateCodeChallenge(codeVerifier);
   const cfg = getConfig();
@@ -122,7 +146,7 @@ async function authorizeViaDialog(): Promise<string> {
     `code_challenge_method=S256&` +
     `scope=all`;
 
-  return new Promise<string>((resolve, reject) => {
+  return new Promise<TokenData>((resolve, reject) => {
     Office.context.ui.displayDialogAsync(
       authUrl,
       { height: 60, width: 40, displayInIframe: false },
@@ -155,9 +179,7 @@ async function authorizeViaDialog(): Promise<string> {
               }
 
               // Exchange the auth code for tokens
-              const tokenData = await exchangeCodeForToken(msg.code, codeVerifier);
-              storeToken(tokenData);
-              resolve(tokenData.access_token);
+              resolve(await exchangeCodeForToken(msg.code, codeVerifier));
             } catch (err: any) {
               reject(err);
             }
@@ -228,7 +250,7 @@ async function refreshToken(token: TokenData): Promise<TokenData> {
   };
 }
 
-async function getAccessToken(): Promise<string> {
+export async function getAccessToken(): Promise<string> {
   let token = getStoredToken();
   if (!token) {
     throw new Error("Not authenticated — please log in.");

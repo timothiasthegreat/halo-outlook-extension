@@ -121,6 +121,10 @@ class SyncEngine:
         )
 
         synced_count = 0
+        # internetMessageIds already journaled on the ticket (by the add-in,
+        # or by a previous run whose state.db was lost). Fetched lazily —
+        # only when a message is missing from the local state.
+        journaled_ids: set[str] | None = None
         for msg in messages:
             internet_message_id = msg.get("internetMessageId", "")
             if not internet_message_id:
@@ -128,6 +132,20 @@ class SyncEngine:
                 continue
 
             if await self._state.is_message_synced(conversation_id, internet_message_id):
+                continue
+
+            if journaled_ids is None:
+                actions = await halo.list_actions(ticket_id)
+                journaled_ids = {
+                    str(a["email_message_id"]) for a in actions if a.get("email_message_id")
+                }
+            if internet_message_id in journaled_ids:
+                logger.debug(
+                    "message_already_on_ticket",
+                    ticket_id=ticket_id,
+                    internet_message_id=internet_message_id[:50],
+                )
+                await self._state.mark_synced(conversation_id, internet_message_id)
                 continue
 
             # Determine direction: is the sender the watcher's email?

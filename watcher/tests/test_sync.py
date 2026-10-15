@@ -64,6 +64,7 @@ def make_mock_halo_client():
     mock.__aenter__ = AsyncMock(return_value=mock)
     mock.__aexit__ = AsyncMock(return_value=None)
     mock.create_action = AsyncMock(return_value={"id": 1, "ticket_id": 9999, "outcome_id": 0})
+    mock.list_actions = AsyncMock(return_value=[])
     return mock
 
 
@@ -114,6 +115,71 @@ class TestSyncEngine:
         assert stats["messages_synced"] == 1
         assert await state.is_message_synced("conv-123", "<msg-already-synced@test.com>")
         assert await state.is_message_synced("conv-123", "<msg-new@test.com>")
+
+    async def test_sync_skips_message_already_journaled_on_ticket(self, state, token_manager):
+        """The add-in journals the first email itself; the watcher must not repost it."""
+        config = make_config()
+        graph = AsyncMock()
+
+        await state.track_conversation("conv-dup", 4242, watched_by="user@example.com")
+
+        graph.get_messages_by_conversation = AsyncMock(
+            return_value=[
+                {
+                    "subject": "Original email",
+                    "from": {"emailAddress": {"address": "customer@example.com"}},
+                    "internetMessageId": "<first@test.com>",
+                },
+                {
+                    "subject": "Reply",
+                    "from": {"emailAddress": {"address": "customer@example.com"}},
+                    "internetMessageId": "<second@test.com>",
+                },
+            ]
+        )
+
+        mock_halo = make_mock_halo_client()
+        mock_halo.list_actions = AsyncMock(
+            return_value=[
+                {"id": 1, "email_message_id": "<first@test.com>"},
+                {"id": 2, "email_message_id": None},
+            ]
+        )
+        with patch("watcher.sync.HaloClient", return_value=mock_halo):
+            engine = SyncEngine(config, token_manager, graph, state)
+            stats = await engine.sync_once()
+
+        assert stats["messages_synced"] == 1
+        posted = [c.kwargs["email_message_id"] for c in mock_halo.create_action.call_args_list]
+        assert posted == ["<second@test.com>"]
+        assert mock_halo.list_actions.await_count == 1
+        # Recorded locally so later cycles don't ask Halo again
+        assert await state.is_message_synced("conv-dup", "<first@test.com>")
+
+    async def test_sync_does_not_query_halo_when_all_synced(self, state, token_manager):
+        config = make_config()
+        graph = AsyncMock()
+
+        await state.track_conversation("conv-quiet", 4343, watched_by="user@example.com")
+        await state.mark_synced("conv-quiet", "<old@test.com>")
+
+        graph.get_messages_by_conversation = AsyncMock(
+            return_value=[
+                {
+                    "subject": "Old",
+                    "from": {"emailAddress": {"address": "customer@example.com"}},
+                    "internetMessageId": "<old@test.com>",
+                }
+            ]
+        )
+
+        mock_halo = make_mock_halo_client()
+        with patch("watcher.sync.HaloClient", return_value=mock_halo):
+            engine = SyncEngine(config, token_manager, graph, state)
+            await engine.sync_once()
+
+        mock_halo.list_actions.assert_not_awaited()
+        mock_halo.create_action.assert_not_awaited()
 
     async def test_sync_determines_direction_correctly(self, state, token_manager):
         config = make_config()
