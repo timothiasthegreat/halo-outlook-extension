@@ -83,6 +83,8 @@ class WatcherConfig(BaseModel):
 
     poll_interval_seconds: int = Field(default=90, ge=30, le=3600)
     stale_conversation_days: int = Field(default=14, ge=1, le=365)
+    # Stale conversations are still checked for late replies, just less often.
+    stale_poll_interval_seconds: int = Field(default=3600, ge=60, le=86400)
     log_level: str = Field(default="INFO", pattern=r"^(DEBUG|INFO|WARNING|ERROR)$")
     state_db_path: str = Field(default="state.db")
 

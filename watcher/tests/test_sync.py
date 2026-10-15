@@ -64,6 +64,7 @@ def make_mock_halo_client():
     mock.__aenter__ = AsyncMock(return_value=mock)
     mock.__aexit__ = AsyncMock(return_value=None)
     mock.create_action = AsyncMock(return_value={"id": 1, "ticket_id": 9999, "outcome_id": 0})
+    mock.list_actions = AsyncMock(return_value=[])
     return mock
 
 
@@ -114,6 +115,71 @@ class TestSyncEngine:
         assert stats["messages_synced"] == 1
         assert await state.is_message_synced("conv-123", "<msg-already-synced@test.com>")
         assert await state.is_message_synced("conv-123", "<msg-new@test.com>")
+
+    async def test_sync_skips_message_already_journaled_on_ticket(self, state, token_manager):
+        """The add-in journals the first email itself; the watcher must not repost it."""
+        config = make_config()
+        graph = AsyncMock()
+
+        await state.track_conversation("conv-dup", 4242, watched_by="user@example.com")
+
+        graph.get_messages_by_conversation = AsyncMock(
+            return_value=[
+                {
+                    "subject": "Original email",
+                    "from": {"emailAddress": {"address": "customer@example.com"}},
+                    "internetMessageId": "<first@test.com>",
+                },
+                {
+                    "subject": "Reply",
+                    "from": {"emailAddress": {"address": "customer@example.com"}},
+                    "internetMessageId": "<second@test.com>",
+                },
+            ]
+        )
+
+        mock_halo = make_mock_halo_client()
+        mock_halo.list_actions = AsyncMock(
+            return_value=[
+                {"id": 1, "email_message_id": "<first@test.com>"},
+                {"id": 2, "email_message_id": None},
+            ]
+        )
+        with patch("watcher.sync.HaloClient", return_value=mock_halo):
+            engine = SyncEngine(config, token_manager, graph, state)
+            stats = await engine.sync_once()
+
+        assert stats["messages_synced"] == 1
+        posted = [c.kwargs["email_message_id"] for c in mock_halo.create_action.call_args_list]
+        assert posted == ["<second@test.com>"]
+        assert mock_halo.list_actions.await_count == 1
+        # Recorded locally so later cycles don't ask Halo again
+        assert await state.is_message_synced("conv-dup", "<first@test.com>")
+
+    async def test_sync_does_not_query_halo_when_all_synced(self, state, token_manager):
+        config = make_config()
+        graph = AsyncMock()
+
+        await state.track_conversation("conv-quiet", 4343, watched_by="user@example.com")
+        await state.mark_synced("conv-quiet", "<old@test.com>")
+
+        graph.get_messages_by_conversation = AsyncMock(
+            return_value=[
+                {
+                    "subject": "Old",
+                    "from": {"emailAddress": {"address": "customer@example.com"}},
+                    "internetMessageId": "<old@test.com>",
+                }
+            ]
+        )
+
+        mock_halo = make_mock_halo_client()
+        with patch("watcher.sync.HaloClient", return_value=mock_halo):
+            engine = SyncEngine(config, token_manager, graph, state)
+            await engine.sync_once()
+
+        mock_halo.list_actions.assert_not_awaited()
+        mock_halo.create_action.assert_not_awaited()
 
     async def test_sync_determines_direction_correctly(self, state, token_manager):
         config = make_config()
@@ -243,3 +309,112 @@ class TestSyncEngine:
             stats = await engine.sync_once()
 
         assert stats["messages_synced"] == 0
+
+@pytest.mark.asyncio
+class TestAttachmentMailbox:
+    async def test_attachments_read_from_watching_mailbox(self, state, token_manager):
+        """Graph message ids only resolve in their own mailbox, so attachments
+        must come from watched_by, not graph.user_email."""
+        config = make_config()
+        graph = AsyncMock()
+        await state.track_conversation("conv-att", 9999, watched_by="user@example.com")
+        graph.get_messages_by_conversation = AsyncMock(
+            return_value=[
+                {
+                    "id": "graph-msg-1",
+                    "subject": "With file",
+                    "from": {"emailAddress": {"address": "customer@example.com"}},
+                    "internetMessageId": "<att@test.com>",
+                    "hasAttachments": True,
+                }
+            ]
+        )
+        graph.get_message_attachments = AsyncMock(
+            return_value=[
+                {
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "id": "att-1",
+                    "name": "report.pdf",
+                    "contentType": "application/pdf",
+                }
+            ]
+        )
+        graph.get_attachment_content = AsyncMock(return_value=b"%PDF")
+
+        mock_halo = make_mock_halo_client()
+        mock_halo.attach_to_ticket = AsyncMock()
+        with patch("watcher.sync.HaloClient", return_value=mock_halo):
+            await SyncEngine(config, token_manager, graph, state).sync_once()
+
+        graph.get_message_attachments.assert_awaited_once_with(
+            "graph-msg-1", user_email="user@example.com"
+        )
+        graph.get_attachment_content.assert_awaited_once_with(
+            "graph-msg-1", "att-1", user_email="user@example.com"
+        )
+        mock_halo.attach_to_ticket.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+class TestStaleConversations:
+    def _late_reply(self):
+        return [
+            {
+                "subject": "Late reply",
+                "from": {"emailAddress": {"address": "customer@example.com"}},
+                "internetMessageId": "<late@test.com>",
+            }
+        ]
+
+    async def test_stale_conversation_still_journals_late_reply(self, state, token_manager):
+        config = make_config()
+        graph = AsyncMock()
+        await state.track_conversation("conv-quiet", 9999, watched_by="user@example.com")
+        await state.mark_stale("conv-quiet")
+        graph.get_messages_by_conversation = AsyncMock(return_value=self._late_reply())
+
+        mock_halo = make_mock_halo_client()
+        with patch("watcher.sync.HaloClient", return_value=mock_halo):
+            stats = await SyncEngine(config, token_manager, graph, state).sync_once()
+
+        assert stats["messages_synced"] == 1
+        mock_halo.create_action.assert_awaited_once()
+        # The reply reactivates the conversation
+        watched = await state.get_watched_conversations()
+        assert [c["conversation_id"] for c in watched] == ["conv-quiet"]
+        assert await state.get_stale_conversations() == []
+
+    async def test_stale_conversations_polled_less_often(self, state, token_manager):
+        config = make_config(watcher={"stale_poll_interval_seconds": 3600})
+        graph = AsyncMock()
+        await state.track_conversation("conv-quiet", 9999, watched_by="user@example.com")
+        await state.mark_stale("conv-quiet")
+        graph.get_messages_by_conversation = AsyncMock(return_value=[])
+
+        mock_halo = make_mock_halo_client()
+        with patch("watcher.sync.HaloClient", return_value=mock_halo):
+            engine = SyncEngine(config, token_manager, graph, state)
+            first = await engine.sync_once()
+            second = await engine.sync_once()
+            engine._last_stale_poll -= 3600  # interval elapsed
+            third = await engine.sync_once()
+
+        assert first["conversations_checked"] == 1
+        assert second["conversations_checked"] == 0
+        assert third["conversations_checked"] == 1
+
+    async def test_quiet_conversation_marked_stale_not_unlinked(self, state, token_manager):
+        config = make_config(watcher={"stale_conversation_days": 1})
+        await state.track_conversation("conv-old", 9999, watched_by="user@example.com")
+        await state._conn.execute(
+            "UPDATE conversations SET last_sync_at = '2000-01-01T00:00:00+00:00'"
+        )
+        await state._conn.commit()
+
+        graph = AsyncMock()
+        graph.get_messages_by_conversation = AsyncMock(return_value=[])
+        with patch("watcher.sync.HaloClient", return_value=make_mock_halo_client()):
+            await SyncEngine(config, token_manager, graph, state).sync_once()
+
+        assert await state.get_ticket_id("conv-old") == 9999
+        assert [c["conversation_id"] for c in await state.get_stale_conversations()] == ["conv-old"]

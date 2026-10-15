@@ -134,11 +134,11 @@ The add-in appears in Outlook within minutes. The first time a user opens it, th
 ```
 
 1. **User opens add-in** → Fetches config from `/api/config`, presents "Create Ticket" or "Link to Ticket"
-2. **First-time setup** → User clicks "Enable Watching", PKCE refresh token is encrypted and stored in `state.db` via `/api/register`
+2. **First-time setup** → User clicks "Enable background sync". This runs a separate Halo sign-in whose refresh token goes only to the watcher (the add-in keeps its own). `/api/register` checks the caller's Halo token, and the watcher confirms the refresh token belongs to that agent before encrypting it into `state.db`
 3. **Watcher polls Graph** → Loads watched mailboxes from `state.db`, fetches new messages per-user mailbox
 4. **Dedup & direction** → Skips already-synced messages, determines inbound vs outbound per user's email
 5. **Journals to Halo** → Posts action using that user's PKCE token — correctly attributed to the human
-6. **Staleness detection** → Idle conversations auto-marked stale after `watcher.stale_conversation_days`
+6. **Staleness detection** → Idle conversations marked stale after `watcher.stale_conversation_days`; they stay linked, are checked hourly (`stale_poll_interval_seconds`) and reactivate on the next reply
 
 ---
 

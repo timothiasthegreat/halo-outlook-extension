@@ -126,10 +126,14 @@ class GraphClient:
 
         while next_url:
             if next_url.startswith("https://"):
-                from urllib.parse import urlparse
-
-                parsed = urlparse(next_url)
-                next_url = parsed.path + ("?" + parsed.query if parsed.query else "")
+                # @odata.nextLink is absolute and already carries the query
+                # (including $skiptoken). Make it relative to GRAPH_BASE_URL —
+                # keeping its "/v1.0" would make httpx request /v1.0/v1.0/...
+                # Refuse links to anywhere else so the token isn't sent there.
+                if not next_url.startswith(GRAPH_BASE_URL + "/"):
+                    logger.error("graph_unexpected_next_link", next_link=next_url[:200])
+                    break
+                next_url = next_url[len(GRAPH_BASE_URL):]
                 page_params = None
             else:
                 page_params = params
@@ -212,24 +216,32 @@ class GraphClient:
     # ── attachments ────────────────────────────────────────────
 
     async def get_message_attachments(
-        self, message_id: str
+        self, message_id: str, *, user_email: str | None = None
     ) -> list[dict[str, Any]]:
-        """Fetch attachment metadata for a message."""
-        user_path = (
-            f"/users/{self._config.user_email}"
-            f"/messages/{message_id}/attachments"
-        )
+        """Fetch attachment metadata for a message.
+
+        message_id is a Graph message id, which is only valid in the mailbox
+        it came from — pass that mailbox as user_email. Defaults to the
+        configured user_email from GraphConfig.
+        """
+        email = user_email or self._config.user_email
+        user_path = f"/users/{email}/messages/{message_id}/attachments"
         response = await self._request(user_path)
         response.raise_for_status()
         data = response.json()
         return data.get("value", [])
 
     async def get_attachment_content(
-        self, message_id: str, attachment_id: str
+        self, message_id: str, attachment_id: str, *, user_email: str | None = None
     ) -> bytes | None:
-        """Download the raw bytes of a file attachment."""
+        """Download the raw bytes of a file attachment.
+
+        Like get_message_attachments, user_email must be the mailbox the
+        message came from (defaults to the configured user_email).
+        """
+        email = user_email or self._config.user_email
         user_path = (
-            f"/users/{self._config.user_email}/messages/{message_id}"
+            f"/users/{email}/messages/{message_id}"
             f"/attachments/{attachment_id}/$value"
         )
         response = await self._request(user_path)

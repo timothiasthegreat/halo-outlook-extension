@@ -87,6 +87,6 @@ When a user first opens the add-in:
 |---|---|
 | Add-in shows "Not configured" | Express server must be reachable at the URL in manifest.xml. Check `curl https://your-domain.com/health`. |
 | Config not loading | Verify `GET /api/config` returns JSON. Check `docker compose logs halo-outlook`. |
-| Setup button does nothing | Check `POST /api/register` is reachable from the add-in's origin. |
+| "Enable background sync" fails | Check `POST /api/register` is reachable from the add-in's origin. A 403 means the Halo agent's email doesn't match the Outlook mailbox address; fix the agent's email in Halo. |
 | Add-in doesn't appear after upload | Wait up to 15 minutes. If still missing, check admin center deployment status. |
 | Authentication fails | Verify the Halo OAuth app client ID in `config.yaml` matches the one in the manifest's HaloPSA setup. Same client ID, same scope (`all`), same grant type (PKCE). |

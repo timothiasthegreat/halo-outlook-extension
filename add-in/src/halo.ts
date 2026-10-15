@@ -109,6 +109,30 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
  *   5. We receive the code, exchange it for a token, and store it
  */
 async function authorizeViaDialog(): Promise<string> {
+  const tokenData = await runPkceDialog();
+  storeToken(tokenData);
+  return tokenData.access_token;
+}
+
+/**
+ * Run a separate authorization whose refresh token is handed to the
+ * watcher and never stored in the add-in. The add-in and the watcher each
+ * refresh their own token family, so Halo rotating one never invalidates
+ * the other.
+ */
+export async function authorizeWatcherToken(): Promise<string> {
+  const tokenData = await runPkceDialog();
+  if (!tokenData.refresh_token) {
+    throw new Error("Halo did not issue a refresh token — background sync can't be enabled");
+  }
+  return tokenData.refresh_token;
+}
+
+/**
+ * Run the PKCE auth code flow in an Office dialog and exchange the code.
+ * Returns the tokens without storing them.
+ */
+async function runPkceDialog(): Promise<TokenData> {
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = await generateCodeChallenge(codeVerifier);
   const cfg = getConfig();
@@ -122,7 +146,7 @@ async function authorizeViaDialog(): Promise<string> {
     `code_challenge_method=S256&` +
     `scope=all`;
 
-  return new Promise<string>((resolve, reject) => {
+  return new Promise<TokenData>((resolve, reject) => {
     Office.context.ui.displayDialogAsync(
       authUrl,
       { height: 60, width: 40, displayInIframe: false },
@@ -155,9 +179,7 @@ async function authorizeViaDialog(): Promise<string> {
               }
 
               // Exchange the auth code for tokens
-              const tokenData = await exchangeCodeForToken(msg.code, codeVerifier);
-              storeToken(tokenData);
-              resolve(tokenData.access_token);
+              resolve(await exchangeCodeForToken(msg.code, codeVerifier));
             } catch (err: any) {
               reject(err);
             }
@@ -228,7 +250,7 @@ async function refreshToken(token: TokenData): Promise<TokenData> {
   };
 }
 
-async function getAccessToken(): Promise<string> {
+export async function getAccessToken(): Promise<string> {
   let token = getStoredToken();
   if (!token) {
     throw new Error("Not authenticated — please log in.");
@@ -382,6 +404,70 @@ export async function linkConversation(
     },
   ];
   await apiRequest("POST", "/Tickets", payload);
+}
+
+/**
+ * Clear the conversationId custom field on a ticket (Unlink).
+ * Halo stores an empty value for "".
+ */
+export async function unlinkConversation(ticketId: number): Promise<void> {
+  const cfg = getConfig();
+  const payload = [
+    {
+      id: ticketId,
+      customfields: [
+        {
+          id: cfg.customFieldConvId,
+          value: "",
+        },
+      ],
+    },
+  ];
+  await apiRequest("POST", "/Tickets", payload);
+}
+
+// ── watcher state (via the Express server) ─────────────────────
+
+export interface TrackedConversation {
+  conversationId: string;
+  ticketId: number;
+  lastSyncAt: string | null;
+  /** Quiet for stale_conversation_days — still watched, less often */
+  isStale: boolean;
+}
+
+/**
+ * Ask the watcher's state.db (through the server) whether this conversation
+ * is tracked from the signed-in agent's mailbox. Returns null when it isn't;
+ * throws when the server or watcher can't be reached.
+ */
+export async function lookupConversation(
+  conversationId: string
+): Promise<TrackedConversation | null> {
+  const token = await getAccessToken();
+  const params = new URLSearchParams({ conversationId });
+  const resp = await fetch(`/api/conversations?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (resp.status === 404) return null;
+  if (!resp.ok) throw new Error(`Conversation lookup failed (${resp.status})`);
+  return resp.json();
+}
+
+/**
+ * Remove this conversation from the watcher's state.db so it stops
+ * journaling replies. A conversation the watcher doesn't know counts as done.
+ */
+export async function untrackConversation(conversationId: string): Promise<void> {
+  const token = await getAccessToken();
+  const params = new URLSearchParams({ conversationId });
+  const resp = await fetch(`/api/conversations?${params}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (resp.ok || resp.status === 404) return;
+  const data = await resp.json().catch(() => ({}));
+  throw new Error(data.error || data.detail || `Untrack failed (${resp.status})`);
 }
 
 /**

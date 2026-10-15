@@ -210,6 +210,6 @@ If this volume is lost, every user must re-register their mailbox through the ad
 | `Graph connection failed` | Wrong tenant ID or secret | Verify app registration has `Mail.Read` + admin consent |
 | Add-in shows "Not configured" | `/api/config` not reachable | Check Express is running: `docker compose logs halo-outlook` |
 | Add-in fails to load in Outlook | Missing or misconfigured TLS | Verify reverse proxy has valid cert; check `npx office-addin-manifest validate` |
-| Messages not journaling | No users registered | User must open add-in and click "Enable Watching" |
+| Messages not journaling | User not registered, or their watcher token was revoked | User opens the add-in and clicks "Enable background sync" (the prompt appears whenever the watcher has no usable token for their mailbox) |
 | `FERNET_KEY environment variable is required` | Key not generated | Docker entrypoint auto-generates on first run. Check `/app/state/fernet.key` exists in the volume. |
 | Portainer stack fails to pull | Docker Hub rate limiting | Log in to Docker Hub in Portainer: **Registries → Add registry** → `docker.io` with your credentials |

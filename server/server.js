@@ -15,6 +15,7 @@
  *   Defaults: port 3000, config ../config.yaml
  */
 
+const crypto = require("crypto");
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
@@ -62,29 +63,88 @@ function loadTenantConfig(configPath) {
 const WATCHER_URL = "http://127.0.0.1:8888";
 
 /**
- * Forward a JSON body to the Python watcher's FastAPI endpoint.
+ * Forward a request to the Python watcher's FastAPI endpoint.
  * @param {string} route - e.g. "/track-conversation"
- * @param {object} body - JSON payload
+ * @param {object|undefined} body - JSON payload (omit for GET)
  * @param {string} label - log label
+ * @param {string} [method] - HTTP method, default POST
  * @returns {Promise<{ok: boolean, status: number, body: any}>}
  */
-async function forwardToWatcher(route, body, label) {
+async function forwardToWatcher(route, body, label, method = "POST") {
   const url = WATCHER_URL + route;
   const start = Date.now();
   try {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const opts = { method };
+    if (body !== undefined) {
+      opts.headers = { "Content-Type": "application/json" };
+      opts.body = JSON.stringify(body);
+    }
+    const resp = await fetch(url, opts);
     const elapsed = Date.now() - start;
     const data = await resp.json().catch(() => ({}));
-    console.log(`[watcher] POST ${route} → ${resp.status} (${elapsed}ms)`);
+    console.log(`[watcher] ${method} ${route} → ${resp.status} (${elapsed}ms)`);
     return { ok: resp.ok, status: resp.status, body: data };
   } catch (err) {
     const elapsed = Date.now() - start;
-    console.error(`[watcher] POST ${route} → ERROR (${elapsed}ms):`, err.message);
+    console.error(`[watcher] ${method} ${route} → ERROR (${elapsed}ms):`, err.message);
     return { ok: false, status: 502, body: { error: "Watcher service unreachable", detail: err.message } };
+  }
+}
+
+// ── Caller authentication ────────────────────────────────────────────────
+
+/**
+ * Identify the caller from their Halo access token (Authorization: Bearer).
+ * Halo's /api/agent/me tells us which agent the token belongs to; the
+ * result is cached per token (by SHA-256) for 5 minutes.
+ *
+ * Sets req.agentEmail (lowercased) or responds 401/403/502.
+ */
+const agentCache = new Map();
+const AGENT_CACHE_MS = 5 * 60 * 1000;
+
+async function requireAgent(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Authorization header required" });
+  }
+  const token = authHeader.slice(7);
+  const cacheKey = crypto.createHash("sha256").update(token).digest("hex");
+  const now = Date.now();
+  const cached = agentCache.get(cacheKey);
+  if (cached && now - cached.at < AGENT_CACHE_MS) {
+    req.agentEmail = cached.email;
+    return next();
+  }
+
+  try {
+    const cfg = loadTenantConfig(parseArgs().configPath);
+    const resp = await fetch(`${cfg.haloUrl}/api/agent/me`, {
+      headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+    });
+    if (resp.status === 401 || resp.status === 403) {
+      return res.status(401).json({ error: "Halo rejected the access token" });
+    }
+    if (!resp.ok) {
+      return res.status(502).json({ error: `Halo agent lookup failed (${resp.status})` });
+    }
+    const agent = await resp.json();
+    const email = String(agent.email ?? "").trim().toLowerCase();
+    if (!email) {
+      return res.status(403).json({ error: "Your Halo agent record has no email address" });
+    }
+
+    if (agentCache.size > 500) {
+      for (const [key, entry] of agentCache) {
+        if (now - entry.at >= AGENT_CACHE_MS) agentCache.delete(key);
+      }
+    }
+    agentCache.set(cacheKey, { at: now, email });
+    req.agentEmail = email;
+    next();
+  } catch (err) {
+    console.error("[auth] Halo agent lookup error:", err.message);
+    res.status(502).json({ error: "Halo API unreachable", detail: err.message });
   }
 }
 
@@ -102,8 +162,12 @@ function validateEmail(value, field) {
 
 // ── App ──────────────────────────────────────────────────────────────────
 
+// Proxied POST /Tickets and /Actions carry whole HTML email bodies (inline
+// images included), well past express.json()'s 100kb default.
+const JSON_BODY_LIMIT = "25mb";
+
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
 // Serve add-in static files
 const staticDir = path.resolve(__dirname, "..", "add-in", "dist");
@@ -239,9 +303,12 @@ app.all("/api/proxy/*", async (req, res) => {
  * The add-in calls this after linking a ticket to a conversation.
  * The request is forwarded to the Python watcher's FastAPI endpoint
  * which writes to state.db through its single aiosqlite connection.
+ *
+ * The conversation is always watched from the caller's own mailbox
+ * (the agent identified by their Halo token), never one named in the body.
  */
-app.post("/api/conversations", async (req, res) => {
-  const { conversationId, ticketId, watchedBy } = req.body;
+app.post("/api/conversations", requireAgent, async (req, res) => {
+  const { conversationId, ticketId } = req.body;
 
   if (!conversationId || typeof conversationId !== "string" || conversationId.trim() === "") {
     return res.status(400).json({ error: "conversationId is required and must be a non-empty string" });
@@ -253,24 +320,75 @@ app.post("/api/conversations", async (req, res) => {
   const { ok, status, body } = await forwardToWatcher("/track-conversation", {
     conversationId: conversationId.trim(),
     ticketId,
-    watchedBy: watchedBy || null,
+    watchedBy: req.agentEmail,
   }, "track-conversation");
 
   res.status(status).json(body);
 });
 
 /**
- * Register mailboxes for the watcher — proxied to Python watcher.
+ * Look up whether a conversation is tracked for the caller's mailbox —
+ * proxied to the Python watcher's state.db.
  *
- * The add-in calls this after OAuth consent to register monitored
- * mailboxes. Forwarded to the Python watcher's FastAPI endpoint.
+ * GET /api/conversations?conversationId=...
+ * 200 { conversationId, ticketId, lastSyncAt, isStale } or 404 if untracked.
+ * conversationId goes in the query string because it can contain "/".
  */
-app.post("/api/register", async (req, res) => {
+app.get("/api/conversations", requireAgent, async (req, res) => {
+  const conversationId = req.query.conversationId;
+  if (!conversationId || typeof conversationId !== "string" || conversationId.trim() === "") {
+    return res.status(400).json({ error: "conversationId query parameter is required" });
+  }
+  const route =
+    `/conversation?conversation_id=${encodeURIComponent(conversationId.trim())}` +
+    `&watched_by=${encodeURIComponent(req.agentEmail)}`;
+  const { status, body } = await forwardToWatcher(route, undefined, "conversation", "GET");
+  res.status(status).json(body);
+});
+
+/**
+ * Stop watching a conversation (the add-in's Unlink) — proxied to the
+ * Python watcher, which removes it from state.db. Only the mailbox that
+ * watches the conversation can untrack it.
+ *
+ * DELETE /api/conversations?conversationId=...
+ */
+app.delete("/api/conversations", requireAgent, async (req, res) => {
+  const conversationId = req.query.conversationId;
+  if (!conversationId || typeof conversationId !== "string" || conversationId.trim() === "") {
+    return res.status(400).json({ error: "conversationId query parameter is required" });
+  }
+  const { status, body } = await forwardToWatcher("/untrack-conversation", {
+    conversationId: conversationId.trim(),
+    watchedBy: req.agentEmail,
+  }, "untrack-conversation");
+  res.status(status).json(body);
+});
+
+/**
+ * Register the caller's mailbox for the watcher — proxied to Python watcher.
+ *
+ * The add-in calls this with a refresh token from a Halo authorization
+ * dedicated to the watcher (not the add-in's own token). The caller must
+ * send their Halo access token, and may only register their own email;
+ * the watcher also checks that the refresh token belongs to that agent.
+ */
+app.post("/api/register", requireAgent, async (req, res) => {
   const { email, refresh_token, additional_emails } = req.body;
 
   const emailErr = validateEmail(email, "email");
   if (emailErr) {
     return res.status(400).json({ error: emailErr });
+  }
+  if (email.trim().toLowerCase() !== req.agentEmail) {
+    return res.status(403).json({
+      error: `You can only register your own mailbox (${req.agentEmail})`,
+    });
+  }
+  if (Array.isArray(additional_emails) && additional_emails.length > 0) {
+    return res.status(400).json({
+      error: "additional_emails is not supported — each mailbox must register with its own Halo sign-in",
+    });
   }
   if (!refresh_token || typeof refresh_token !== "string" || refresh_token.trim() === "") {
     return res.status(400).json({ error: "refresh_token is required and must be a non-empty string" });
@@ -282,20 +400,21 @@ app.post("/api/register", async (req, res) => {
     return res.status(400).json({ error: "refresh_token does not appear to be a valid token" });
   }
 
-  const additional = Array.isArray(additional_emails) ? additional_emails : [];
-  for (const extra of additional) {
-    const err = validateEmail(extra, "additional_emails");
-    if (err) {
-      return res.status(400).json({ error: err });
-    }
-  }
-
   const { ok, status, body } = await forwardToWatcher("/register-mailbox", {
-    email: email.trim().toLowerCase(),
+    email: req.agentEmail,
     refresh_token: refresh_token.trim(),
-    additional_emails: additional.map(e => e.trim().toLowerCase()),
   }, "register-mailbox");
 
+  res.status(status).json(body);
+});
+
+/**
+ * Whether the caller's mailbox is registered with a usable watcher token.
+ * The add-in uses this to decide whether to offer "Enable background sync".
+ */
+app.get("/api/register/status", requireAgent, async (req, res) => {
+  const route = `/mailbox-status?email=${encodeURIComponent(req.agentEmail)}`;
+  const { status, body } = await forwardToWatcher(route, undefined, "mailbox-status", "GET");
   res.status(status).json(body);
 });
 

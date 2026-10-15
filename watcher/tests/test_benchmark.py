@@ -3,7 +3,7 @@
 import asyncio
 import tempfile
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from watcher.config import Config
 from watcher.sync import SyncEngine
@@ -53,18 +53,21 @@ async def run_benchmark(num_conversations: int, messages_per_conv: int = 3):
         # Track many conversations
         for i in range(num_conversations):
             conv_id = f"conv-bench-{i:06d}"
-            await state.track_conversation(conv_id, 1000 + i)
+            await state.track_conversation(conv_id, 1000 + i, watched_by="user@example.com")
 
         graph.get_messages_by_conversation = AsyncMock(
             return_value=_build_messages("conv")
         )
         halo.create_action = AsyncMock(return_value={"id": 1})
         halo.attach_to_ticket = AsyncMock()
+        halo.list_actions = AsyncMock(return_value=[])
+        halo.__aenter__.return_value = halo
 
-        engine = SyncEngine(config, halo, graph, state)
+        engine = SyncEngine(config, AsyncMock(), graph, state)
 
         start = time.perf_counter()
-        stats = await engine.sync_once()
+        with patch("watcher.sync.HaloClient", return_value=halo):
+            stats = await engine.sync_once()
         elapsed = time.perf_counter() - start
 
         assert stats["messages_synced"] == num_conversations * messages_per_conv

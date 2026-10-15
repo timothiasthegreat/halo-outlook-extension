@@ -58,8 +58,11 @@ watcher:
   # How often to poll for new messages (in seconds)
   poll_interval_seconds: 90
 
-  # Stop watching conversations after N days of silence
+  # Mark conversations stale (for review) after N days of silence.
+  # Stale conversations stay linked and are still checked for late replies,
+  # every stale_poll_interval_seconds instead of every poll.
   stale_conversation_days: 14
+  stale_poll_interval_seconds: 3600
 
   # Log level: DEBUG, INFO, WARNING, ERROR
   log_level: INFO

@@ -9,7 +9,10 @@ Schema:
     ticket_id INTEGER NOT NULL
     created_at TEXT NOT NULL
     last_sync_at TEXT
-    is_stale INTEGER DEFAULT 0
+    is_stale INTEGER DEFAULT 0   -- quiet for stale_conversation_days; still
+                                 -- polled (less often) and cleared by the
+                                 -- next synced message. Not an unlink.
+    watched_by TEXT
 
   synced_messages:
     id INTEGER PRIMARY KEY AUTOINCREMENT
@@ -128,20 +131,42 @@ class StateStore:
             logger.debug("conversation_tracked", conversation_id=conversation_id, ticket_id=ticket_id)
 
     async def get_ticket_id(self, conversation_id: str) -> int | None:
-        """Get the ticket ID for a tracked conversation, or None."""
+        """Get the ticket ID for a tracked conversation (stale or not), or None."""
         assert self._conn is not None
         cursor = await self._conn.execute(
-            "SELECT ticket_id FROM conversations WHERE conversation_id = ? AND is_stale = 0",
+            "SELECT ticket_id FROM conversations WHERE conversation_id = ?",
             (conversation_id,),
         )
         row = await cursor.fetchone()
         return row["ticket_id"] if row else None
+
+    async def get_conversation(self, conversation_id: str) -> dict[str, object] | None:
+        """Get one conversation mapping (stale or not), or None if untracked."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            """SELECT conversation_id, ticket_id, created_at, last_sync_at,
+                      is_stale, watched_by
+               FROM conversations WHERE conversation_id = ?""",
+            (conversation_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
 
     async def get_watched_conversations(self) -> list[dict[str, object]]:
         """Get all active (non-stale) conversation → ticket mappings."""
         assert self._conn is not None
         cursor = await self._conn.execute(
             "SELECT conversation_id, ticket_id, last_sync_at, watched_by FROM conversations WHERE is_stale = 0"
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_stale_conversations(self) -> list[dict[str, object]]:
+        """Get conversations marked stale. They stay linked and are polled
+        less often; a new synced message clears the flag (touch_sync)."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT conversation_id, ticket_id, last_sync_at, watched_by FROM conversations WHERE is_stale = 1"
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -156,7 +181,11 @@ class StateStore:
         await self._conn.commit()
 
     async def mark_stale(self, conversation_id: str) -> None:
-        """Mark a conversation as stale (inactive)."""
+        """Mark a conversation for review after a quiet period.
+
+        This is not an unlink: the conversation stays linked and is still
+        polled (see get_stale_conversations). touch_sync clears the flag.
+        """
         assert self._conn is not None
         await self._conn.execute(
             "UPDATE conversations SET is_stale = 1 WHERE conversation_id = ?",
